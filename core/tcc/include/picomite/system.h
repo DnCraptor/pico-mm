@@ -2,7 +2,7 @@
 #ifndef _PICOMITE_SYSTEM_H
 #define _PICOMITE_SYSTEM_H
 
-#define PM_API_VERSION 13
+#define PM_API_VERSION 15
 unsigned pm_api_version(void);
 
 #define PM_CAP_DISPLAY     0x0001

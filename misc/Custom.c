@@ -403,6 +403,14 @@ void configurePIO(PIO pio, int sm, int clock,
 #endif
 )
 {
+    /* The BASIC parser and native C API both call this shared routine. */
+#ifdef rp2350
+    for (int i = 1; i < (rp2350a ? 44 : NBRPINS); ++i)
+#else
+    for (int i = 1; i < NBRPINS; ++i)
+#endif
+        if (CheckPin(i, CP_NOABORT | CP_IGNORE_INUSE | CP_IGNORE_RESERVED))
+            gpio_set_input_enabled(PinDef[i].GPno, true);
 
 #ifdef PIODIAG
         MMPrintString(pio == pio0 ? "pio0" : pio == pio1 ? "pio1"
@@ -883,6 +891,7 @@ void MIPS16 cmd_pio(void)
         if (tp)
         {
                 getcsargs(&tp, 13);
+                if (pm_pio_dma_is_c_hw(0)) error("PIO DMA RX owned by C program");
                 if (checkstring(argv[0], (unsigned char *)"OFF"))
                 {
                         dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
@@ -929,7 +938,7 @@ void MIPS16 cmd_pio(void)
                 {
                         if (nbr == 0)
                                 error("Interrupt incopmpatible with continuous running");
-                        DMAinterruptRX = (char *)GetIntAddress(argv[8]);
+                        pm_pio_register_basic_dma_hw(0, (char *)GetIntAddress(argv[8]));
                         IntReady.poll |= INT_POLL_SCAN;
                 }
                 int dmasize = DMA_SIZE_32;
@@ -1020,6 +1029,7 @@ void MIPS16 cmd_pio(void)
         if (tp)
         {
                 getcsargs(&tp, 13);
+                if (pm_pio_dma_is_c_hw(1)) error("PIO DMA TX owned by C program");
                 if (checkstring(argv[0], (unsigned char *)"OFF"))
                 {
                         dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
@@ -1128,7 +1138,7 @@ void MIPS16 cmd_pio(void)
                 {
                         if (ring_mode || continuous_retrigger)
                                 error("Interrupt incompatible with continuous running");
-                        DMAinterruptTX = (char *)GetIntAddress(argv[8]);
+                        pm_pio_register_basic_dma_hw(1, (char *)GetIntAddress(argv[8]));
                         IntReady.poll |= INT_POLL_SCAN;
                 }
 
@@ -1285,31 +1295,13 @@ void MIPS16 cmd_pio(void)
 #endif
                 int sm = getint(argv[2], 0, 3);
                 if (*argv[4])
-                {
-                        if (checkstring(argv[4], (unsigned char *)"0"))
-                                pioRXinterrupts[sm][pior] = NULL;
-                        else
-                                pioRXinterrupts[sm][pior] = (char *)GetIntAddress(argv[4]);
-                }
+                    pm_pio_register_basic_fifo_hw(pior, sm, 0,
+                        checkstring(argv[4], (unsigned char *)"0") ? NULL :
+                        (char *)GetIntAddress(argv[4]));
                 if (argc == 7)
-                {
-                        if (checkstring(argv[6], (unsigned char *)"0"))
-                                pioTXinterrupts[sm][pior] = NULL;
-                        else
-                                pioTXinterrupts[sm][pior] = (char *)GetIntAddress(argv[6]);
-                }
-                piointerrupt = 0;
-                for (int i = 0; i < 4; i++)
-                {
-                        for (int j = 0; j < PIOMAX; j++)
-                        {
-                                if (pioRXinterrupts[i][j] || pioTXinterrupts[i][j])
-                                {
-                                        piointerrupt = 1;
-                                        IntReady.poll |= INT_POLL_SCAN;
-                                }
-                        }
-                }
+                    pm_pio_register_basic_fifo_hw(pior, sm, 1,
+                        checkstring(argv[6], (unsigned char *)"0") ? NULL :
+                        (char *)GetIntAddress(argv[6]));
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"READ");
@@ -2612,20 +2604,7 @@ void MIPS16 cmd_pio(void)
                     (jointxfifo && (joinrxfifoget || joinrxfifoput)) ||
                     (joinrxfifo && (joinrxfifoget || joinrxfifoput)))
                         error("Invalid FIFO configuration");
-#else
-                for (int i = 1; i < (NBRPINS); i++)
 #endif
-#ifdef rp2350
-                for (int i = 1; i < (rp2350a ? 44 : NBRPINS); i++)
-                {
-#else
-                {
-#endif
-                        if (CheckPin(i, CP_NOABORT | CP_IGNORE_INUSE | CP_IGNORE_RESERVED))
-                        { // don't reset invalid or boot reserved pins
-                                gpio_set_input_enabled(PinDef[i].GPno, true);
-                        }
-                }
                 configurePIO(pio, sm, clock,
                              startaddress, base,
                              sidesetbase, sidesetno, sidesetout, setbase, setno, setout,
@@ -2903,14 +2882,14 @@ void fun_pio(void)
         tp = checkstring(ep, (unsigned char *)"DMA RX POINTER");
         if (tp)
         {
-                iret = dma_hw->ch[dma_rx_chan].write_addr;
+                iret = pm_pio_dma_pointer_hw(0);
                 targ = T_INT;
                 return;
         }
         tp = checkstring(ep, (unsigned char *)"DMA TX POINTER");
         if (tp)
         {
-                iret = dma_hw->ch[dma_tx_chan].read_addr;
+                iret = pm_pio_dma_pointer_hw(1);
                 targ = T_INT;
                 return;
         }

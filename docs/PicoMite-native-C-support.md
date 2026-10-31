@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 13.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 15.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -661,6 +661,8 @@ here applies to the expanded RP2350 runtime.
 | 11 | `audio.h`: signed-16 PCM one-shot and streaming callback (`pm_pcm_play/start/stop/playing/poll`); PWM/I2S/Bluetooth, not VS1053 |
 | 12 | `pio.h`: shared BASIC/C PIO SM/FIFO operations and one-shot DMA RX/TX (RUN-scoped memory) |
 | 13 | `pio.h`: BASIC-shared PIO PROGRAM / PROGRAM LINE / CLEAR and FIFO occupancy queries |
+| 14 | `pio.h`: FIFO RX/TX callback polling, DMA completion callbacks and DMA address pointers; BASIC interrupt conditions shared with C |
+| 15 | `pio.h`: PIO CONFIGURE and SYNC through the existing BASIC hardware implementation; no duplicate driver |
 
 Native PCM uses signed 16-bit mono/stereo frames, not bytes. `pm_pcm_play()`
 copies the buffer into firmware memory and may outlive `RUN "file.c"`;

@@ -25,6 +25,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "core/pm_pio_shared.h"
 #ifdef PICOMITEWEB
 #include "WiFi.h" // setwifi() — defined in net/WiFi.c
 #endif
@@ -10590,8 +10591,10 @@ static int PolledSourceArmed(void)
     for (int i = 1; i <= MAXPID; i++)
         if (PIDchannels[i].interrupt != NULL && PIDchannels[i].active)
             return 1;
-    return piointerrupt || DMAinterruptRX || DMAinterruptTX || (ADCInterrupt && dmarunning) ||
-           KeypadInterrupt || CSubInterrupt;
+    return piointerrupt ||
+           (DMAinterruptRX && !pm_pio_dma_is_c_hw(0)) ||
+           (DMAinterruptTX && !pm_pio_dma_is_c_hw(1)) ||
+           (ADCInterrupt && dmarunning) || KeypadInterrupt || CSubInterrupt;
 }
 
 // clear an I2C slave-ready bit; the I2C interrupt sets bits in the same word,
@@ -10645,66 +10648,38 @@ int checkdetailinterrupts(void)
     { // have any PIO interrupts been set
         for (int pio = 0; pio < PIOMAX; pio++)
         {
-#ifdef rp2350
-            PIO pioinuse = (pio == 0 ? pio0 : (pio == 1 ? pio1 : pio2));
-#else
-            PIO pioinuse = (pio == 0 ? pio0 : pio1);
-#endif
             for (int sm = 0; sm < 4; sm++)
             {
-                int TXlevel = pio_sm_get_tx_fifo_level(pioinuse, sm);
-                int RXlevel = pio_sm_get_rx_fifo_level(pioinuse, sm);
-                if (RXlevel && pioRXinterrupts[sm][pio])
-                { // is there a character in the buffer and has an interrupt been set?
+                if (pioRXinterrupts[sm][pio] &&
+                    !pm_pio_fifo_is_c_hw(pio, sm, 0) &&
+                    pm_pio_fifo_event_hw(pio, sm, 0, NULL))
+                {
                     intaddr = pioRXinterrupts[sm][pio];
                     goto GotAnInterrupt;
                 }
-                if (TXlevel && pioTXinterrupts[sm][pio])
+                if (!pm_pio_fifo_is_c_hw(pio, sm, 1) &&
+                    pm_pio_fifo_event_hw(pio, sm, 1, &pioTXlast[sm][pio]) &&
+                    pioTXinterrupts[sm][pio])
                 {
-                    int full = (pioinuse->sm[sm].shiftctrl & (1 << 30)) ? 8 : 4;
-                    if (TXlevel != full && pioTXlast[sm][pio] == full)
-                    { // was the buffer full last time and not now and is an interrupt set?
-                        intaddr = pioTXinterrupts[sm][pio];
-                        pioTXlast[sm][pio] = TXlevel;
-                        goto GotAnInterrupt;
-                    }
+                    intaddr = pioTXinterrupts[sm][pio];
+                    goto GotAnInterrupt;
                 }
-                pioTXlast[sm][pio] = TXlevel;
             }
         }
     }
-    if (DMAinterruptRX)
+    if (DMAinterruptRX && !pm_pio_dma_is_c_hw(0) && pm_pio_dma_complete_hw(0))
     {
-        if (!dma_channel_is_busy(dma_rx_chan))
-        {
-#ifdef rp2350
-            PIO pio = (dma_rx_pio == 0 ? pio0 : (dma_rx_pio == 1 ? pio1 : pio2));
-#else
-            PIO pio = (dma_rx_pio == 0 ? pio0 : pio1);
-#endif
-            intaddr = (char *)DMAinterruptRX;
-            DMAinterruptRX = NULL;
-            pio_sm_set_enabled(pio, dma_rx_sm, false);
-            goto GotAnInterrupt;
-        }
+        intaddr = (char *)DMAinterruptRX;
+        DMAinterruptRX = NULL;
+        pm_pio_stop_hw(dma_rx_pio, dma_rx_sm);
+        goto GotAnInterrupt;
     }
-    if (DMAinterruptTX)
+    if (DMAinterruptTX && !pm_pio_dma_is_c_hw(1) && pm_pio_dma_complete_hw(1))
     {
-        if (!dma_channel_is_busy(dma_tx_chan))
-        {
-#ifdef rp2350
-            PIO pio = (dma_tx_pio == 0 ? pio0 : (dma_tx_pio == 1 ? pio1 : pio2));
-#else
-            PIO pio = (dma_tx_pio == 0 ? pio0 : pio1);
-#endif
-            if ((pio->flevel >> (dma_tx_sm * 8) & 0xf) == 0)
-            {
-                intaddr = (char *)DMAinterruptTX;
-                DMAinterruptTX = NULL;
-                pio_sm_set_enabled(pio, dma_tx_sm, false);
-                goto GotAnInterrupt;
-            }
-        }
+        intaddr = (char *)DMAinterruptTX;
+        DMAinterruptTX = NULL;
+        pm_pio_stop_hw(dma_tx_pio, dma_tx_sm);
+        goto GotAnInterrupt;
     }
 
 #ifdef GUICONTROLS

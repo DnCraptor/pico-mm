@@ -6,16 +6,27 @@
 #include "core/pm_runtime.h"
 #include "core/pm_pio_shared.h"
 #include "core/tcc/include/picomite/pio.h"
+#include <string.h>
+extern int dma_tx_pio, dma_tx_sm, dma_rx_pio, dma_rx_sm;
 
 /* Only resources started by this RUN may be stopped during teardown. */
 static unsigned pm_c_dma_owned;
 static const void *pm_c_dma_buffer[2];
 static unsigned pm_c_sm_owned[3];
+/* BASIC's pioRXinterrupts/pioTXinterrupts/DMAinterruptRX/TX are the
+ * common callback slots; pioTXlast is also common. No parallel tables. */
+typedef void (*pm_pio_fifo_callback)(int pio, int sm);
+typedef void (*pm_pio_dma_callback)(int tx);
+static unsigned pm_c_dma_pending;
+static bool pm_c_polling;
 void pm_pio_runtime_begin(void)
 {
     pm_c_dma_owned = 0;
     pm_c_dma_buffer[0] = pm_c_dma_buffer[1] = NULL;
     pm_c_sm_owned[0] = pm_c_sm_owned[1] = pm_c_sm_owned[2] = 0;
+    pm_pio_unregister_c_handlers_hw();
+    pm_c_dma_pending = 0;
+    pm_c_polling = false;
 }
 void pm_pio_runtime_end(void)
 {
@@ -39,6 +50,7 @@ void pm_pio_runtime_before_free(const void *allocation, size_t size)
             p >= start && p - start < size) {
             pm_pio_dma_stop_hw((int)tx);
             pm_c_dma_owned &= ~(1u << tx);
+            pm_c_dma_pending &= ~(1u << tx);
             pm_c_dma_buffer[tx] = NULL;
         }
     }
@@ -161,6 +173,28 @@ uint32_t pm_pio_flevel(int pio, int sm, int tx)
     return args.level;
 }
 
+static void pm_pio_configure_do(void *p)
+{
+    struct {int pio,sm; const pm_pio_config *config;} *a = p;
+    pm_pio_require_run();
+    pm_pio_configure_hw(a->pio, a->sm, a->config);
+}
+void pm_pio_configure(int pio, int sm, const pm_pio_config *config)
+{
+    struct {int pio,sm; const pm_pio_config *config;} a = {pio,sm,config};
+    pm_core_call(pm_pio_configure_do, &a);
+}
+static void pm_pio_sync_do(void *p)
+{
+    struct {int pio; unsigned my,prev,next;} *a = p;
+    pm_pio_require_run();
+    pm_pio_sync_hw(a->pio, a->my, a->prev, a->next);
+}
+void pm_pio_sync(int pio, unsigned my, unsigned prev, unsigned next)
+{
+    struct {int pio; unsigned my,prev,next;} a = {pio,my,prev,next};
+    pm_core_call(pm_pio_sync_do, &a);
+}
 static void pm_pio_available_do(void *p)
 { int *a=p; a[1]=pm_pio_available_hw(a[0]); }
 int pm_pio_available(int pio)
@@ -186,7 +220,11 @@ static void pm_pio_dma_do(void *arg)
     /* Set ownership BEFORE touching hardware: errors must still clean up. */
     if (pm_pio_dma_busy_hw(a->tx))
         error("PIO DMA channel in use");
+    if ((a->tx ? DMAinterruptTX : DMAinterruptRX) &&
+        !pm_pio_dma_is_c_hw(a->tx))
+        error("PIO DMA callback already owned by BASIC");
     pm_c_dma_owned |= mask;
+    pm_c_dma_pending |= mask;
     pm_c_dma_buffer[a->tx] = a->ptr;
     pm_pio_dma_transfer_hw(a->tx,a->pio,a->sm,a->ptr,a->capacity,
                            a->count,a->bits,1);
@@ -208,11 +246,94 @@ static void pm_pio_dma_stop_do(void *p)
       error("PIO DMA not owned by C program");
   pm_pio_dma_stop_hw(tx);
   pm_c_dma_owned &= ~(1u << tx);
+  pm_c_dma_pending &= ~(1u << tx);
   pm_c_dma_buffer[tx] = NULL; }
 void pm_pio_dma_stop(int tx)
 { pm_core_call(pm_pio_dma_stop_do,&tx); }
 
-#include <string.h>
+/* Callbacks execute only at C API / explicit poll boundaries, never in an
+ * IRQ. A callback may call other C API services; guard nested polling. */
+void pm_pio_runtime_poll(void)
+{
+    int pior, sm, tx;
+    if (!pm_runtime_is_running() || pm_c_polling) return;
+    pm_c_polling = true;
+    for (pior = 0; pior < 3; ++pior) {
+        if (!pm_pio_available_hw(pior)) continue;
+        for (sm = 0; sm < 4; ++sm) {
+            pm_pio_fifo_callback rx = pm_pio_c_fifo_handler_hw(pior, sm, 0);
+            pm_pio_fifo_callback txcb = pm_pio_c_fifo_handler_hw(pior, sm, 1);
+            if (rx && pm_pio_fifo_event_hw(pior, sm, 0, NULL))
+                rx(pior, sm);
+            if (txcb && pm_pio_fifo_event_hw(pior, sm, 1,
+                                             &pioTXlast[sm][pior]))
+                txcb(pior, sm);
+        }
+    }
+    for (tx = 0; tx < 2; ++tx) {
+        unsigned mask = 1u << tx;
+        if (!(pm_c_dma_pending & mask) ||
+            !pm_pio_dma_complete_hw(tx)) continue;
+        pm_c_dma_pending &= ~mask; /* notify at most once per transfer */
+        pm_pio_dma_callback cb = pm_pio_c_dma_handler_hw(tx);
+        if (cb) {
+            int pior = tx ? dma_tx_pio : dma_rx_pio;
+            int sm = tx ? dma_tx_sm : dma_rx_sm;
+            pm_pio_stop_hw(pior, sm);
+            cb(tx);
+        }
+    }
+    pm_c_polling = false;
+}
+void pm_pio_poll(void)
+{
+    pm_pio_require_run();
+    pm_pio_runtime_poll();
+}
+static void pm_pio_fifo_callback_do(void *arg)
+{
+    struct {int pio, sm, tx; pm_pio_fifo_callback fn;} *a = arg;
+    pm_pio_require_run();
+    if (a->pio < 0 || a->pio >= 3 || a->sm < 0 || a->sm >= 4 ||
+        (a->tx != 0 && a->tx != 1) || !pm_pio_available_hw(a->pio))
+        error("Invalid PIO FIFO interrupt selection");
+    pm_pio_register_c_fifo_hw(a->pio, a->sm, a->tx, a->fn);
+}
+void pm_pio_on_fifo(int pio, int sm, int tx, pm_pio_fifo_callback callback)
+{
+    struct {int pio, sm, tx; pm_pio_fifo_callback fn;} a =
+        {pio, sm, tx, callback};
+    pm_core_call(pm_pio_fifo_callback_do, &a);
+}
+static void pm_pio_dma_callback_do(void *arg)
+{
+    struct {int tx; pm_pio_dma_callback fn;} *a = arg;
+    pm_pio_require_run();
+    if (a->tx != 0 && a->tx != 1)
+        error("Invalid PIO DMA direction");
+    pm_pio_register_c_dma_hw(a->tx, a->fn);
+}
+void pm_pio_on_dma_done(int tx, pm_pio_dma_callback callback)
+{
+    struct {int tx; pm_pio_dma_callback fn;} a = {tx, callback};
+    pm_core_call(pm_pio_dma_callback_do, &a);
+}
+static void pm_pio_dma_pointer_do(void *arg)
+{
+    struct {int tx; uintptr_t value;} *a = arg;
+    pm_pio_require_run();
+    if ((a->tx != 0 && a->tx != 1) ||
+        !(pm_c_dma_owned & (1u << a->tx)))
+        error("PIO DMA not owned by C program");
+    a->value = pm_pio_dma_pointer_hw(a->tx);
+}
+uintptr_t pm_pio_dma_pointer(int tx)
+{
+    struct {int tx; uintptr_t value;} a = {tx, 0};
+    pm_core_call(pm_pio_dma_pointer_do, &a);
+    return a.value;
+}
+
 typedef struct {const char *name;const void *address;} pm_pio_symbol;
 #define PM_PIO_SYM(n) {#n,(const void *)&n},
 static const pm_pio_symbol pm_pio_syms[]={
@@ -227,10 +348,16 @@ static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_program_line)
     PM_PIO_SYM(pm_pio_clear)
     PM_PIO_SYM(pm_pio_flevel)
+    PM_PIO_SYM(pm_pio_configure)
+    PM_PIO_SYM(pm_pio_sync)
     PM_PIO_SYM(pm_pio_dma_rx)
     PM_PIO_SYM(pm_pio_dma_tx)
     PM_PIO_SYM(pm_pio_dma_busy)
     PM_PIO_SYM(pm_pio_dma_stop)
+    PM_PIO_SYM(pm_pio_dma_pointer)
+    PM_PIO_SYM(pm_pio_on_fifo)
+    PM_PIO_SYM(pm_pio_on_dma_done)
+    PM_PIO_SYM(pm_pio_poll)
 };
 const void *pm_pio_resolve_symbol(const char *name)
 {

@@ -21,6 +21,134 @@ extern void pio_init(int pior, int sm, uint32_t pinctrl, uint32_t execctrl,
 #define CLKMIN ((Option.CPU_Speed * 125) >> 13)
 #define CLKMAX (Option.CPU_Speed * 1000)
 
+/* BASIC's configuration and clock synchronisation code is authoritative.
+ * C calls these same functions, not a duplicate register-level driver. */
+extern void syncPIO(int pio, int my, int prev, int next);
+extern void configurePIO(PIO pio, int sm, int clock,
+                         int startaddress, int base,
+                         int sidesetbase, int sidesetno, int sidesetout,
+                         int setbase, int setno, int setout,
+                         int outbase, int outno, int outout, int inbase,
+                         int jmppin, int wraptarget, int wrap,
+                         int sideenable, int sidepindir,
+                         int pushthreshold, int pullthreshold,
+                         int autopush, int autopull,
+                         int inshiftdir, int outshiftdir,
+                         int joinrxfifo, int jointxfifo
+#ifdef rp2350
+                         , int joinrxfifoget, int joinrxfifoput
+#endif
+);
+
+/* 24 FIFO slots + 2 DMA slots already exist in BASIC. Keep only a 26-bit
+ * ownership discriminator; function pointers use the same 32-bit slots as
+ * BASIC code addresses on RP2040/RP2350. */
+static uint32_t pm_c_event_bits;
+#define PM_FIFO_TAG(p,s,t) (1u << (((p) * 4 + (s)) * 2 + (t)))
+#define PM_DMA_TAG(t) (1u << (24 + (t)))
+static char **pm_pio_fifo_slot(int p, int sm, int tx)
+{
+    if (p < 0 || p >= PIOMAX || sm < 0 || sm >= 4 || (tx != 0 && tx != 1))
+        error("Invalid PIO FIFO selection");
+    return tx ? &pioTXinterrupts[sm][p] : &pioRXinterrupts[sm][p];
+}
+static char **pm_pio_dma_slot(int tx)
+{
+    if (tx != 0 && tx != 1) error("Invalid PIO DMA direction");
+    return tx ? &DMAinterruptTX : &DMAinterruptRX;
+}
+static void pm_pio_rearm_basic_interrupts(void)
+{
+    int p, sm;
+    piointerrupt = 0;
+    for (p = 0; p < PIOMAX; ++p)
+        for (sm = 0; sm < 4; ++sm) {
+            if ((pioRXinterrupts[sm][p] &&
+                 !(pm_c_event_bits & PM_FIFO_TAG(p,sm,0))) ||
+                (pioTXinterrupts[sm][p] &&
+                 !(pm_c_event_bits & PM_FIFO_TAG(p,sm,1))))
+                piointerrupt = 1;
+        }
+    if (piointerrupt) IntReady.poll |= INT_POLL_SCAN;
+}
+int pm_pio_fifo_is_c_hw(int p, int sm, int tx)
+{
+    (void)pm_pio_fifo_slot(p,sm,tx);
+    return (pm_c_event_bits & PM_FIFO_TAG(p,sm,tx)) != 0;
+}
+void pm_pio_register_basic_fifo_hw(int p, int sm, int tx, char *target)
+{
+    char **slot = pm_pio_fifo_slot(p,sm,tx);
+    if (pm_c_event_bits & PM_FIFO_TAG(p,sm,tx))
+        error("PIO FIFO callback owned by C program");
+    *slot = target;
+    pm_pio_rearm_basic_interrupts();
+}
+void pm_pio_register_c_fifo_hw(int p, int sm, int tx, void (*cb)(int,int))
+{
+    char **slot = pm_pio_fifo_slot(p,sm,tx);
+    uint32_t bit = PM_FIFO_TAG(p,sm,tx);
+    if (cb && *slot && !(pm_c_event_bits & bit))
+        error("PIO FIFO callback already owned by BASIC");
+    if (!(pm_c_event_bits & bit) && !cb) return;
+    *slot = (char *)(uintptr_t)cb;
+    if (cb) pm_c_event_bits |= bit;
+    else pm_c_event_bits &= ~bit;
+    if (tx) pioTXlast[sm][p] = 0;
+    pm_pio_rearm_basic_interrupts();
+}
+void (*pm_pio_c_fifo_handler_hw(int p, int sm, int tx))(int,int)
+{
+    char **slot = pm_pio_fifo_slot(p,sm,tx);
+    return (pm_c_event_bits & PM_FIFO_TAG(p,sm,tx)) ?
+           (void (*)(int,int))(uintptr_t)*slot : NULL;
+}
+int pm_pio_dma_is_c_hw(int tx)
+{
+    (void)pm_pio_dma_slot(tx);
+    return (pm_c_event_bits & PM_DMA_TAG(tx)) != 0;
+}
+void pm_pio_register_basic_dma_hw(int tx, char *target)
+{
+    char **slot = pm_pio_dma_slot(tx);
+    if (pm_c_event_bits & PM_DMA_TAG(tx))
+        error("PIO DMA callback owned by C program");
+    *slot = target;
+    if (target) IntReady.poll |= INT_POLL_SCAN;
+}
+void pm_pio_register_c_dma_hw(int tx, void (*cb)(int))
+{
+    char **slot = pm_pio_dma_slot(tx);
+    uint32_t bit = PM_DMA_TAG(tx);
+    if (cb && *slot && !(pm_c_event_bits & bit))
+        error("PIO DMA callback already owned by BASIC");
+    if (!(pm_c_event_bits & bit) && !cb) return;
+    *slot = (char *)(uintptr_t)cb;
+    if (cb) pm_c_event_bits |= bit;
+    else pm_c_event_bits &= ~bit;
+}
+void (*pm_pio_c_dma_handler_hw(int tx))(int)
+{
+    char **slot = pm_pio_dma_slot(tx);
+    return (pm_c_event_bits & PM_DMA_TAG(tx)) ?
+           (void (*)(int))(uintptr_t)*slot : NULL;
+}
+void pm_pio_unregister_c_handlers_hw(void)
+{
+    int p, sm, tx;
+    for (p = 0; p < PIOMAX; ++p)
+        for (sm = 0; sm < 4; ++sm)
+            for (tx = 0; tx < 2; ++tx)
+                if (pm_c_event_bits & PM_FIFO_TAG(p,sm,tx)) {
+                    *pm_pio_fifo_slot(p,sm,tx) = NULL;
+                    if (tx) pioTXlast[sm][p] = 0;
+                }
+    for (tx = 0; tx < 2; ++tx)
+        if (pm_c_event_bits & PM_DMA_TAG(tx)) *pm_pio_dma_slot(tx) = NULL;
+    pm_c_event_bits = 0;
+    pm_pio_rearm_basic_interrupts();
+}
+
 /* PIO hardware primitives are shared by BASIC's cmd_pio and native C.
  * Keep the resource restrictions exactly where BASIC enforces them. */
 static PIO pm_pio_checked(int pior)
@@ -39,6 +167,87 @@ static PIO pm_pio_sm_checked(int pior,int sm)
 {
     if (sm < 0 || sm >= 4) error("Invalid PIO state machine");
     return pm_pio_checked(pior);
+}
+/* Validation mirrors BASIC PIO CONFIGURE before entering the common
+ * configurePIO routine. No additional persistent state is allocated. */
+static int pm_pio_pin_value(int value)
+{
+    if (value < 0 || value > 31) error("Invalid PIO pin base");
+    return value;
+}
+static void pm_pio_bool_value(int value)
+{
+    if (value != 0 && value != 1) error("Invalid PIO Boolean option");
+}
+void pm_pio_configure_hw(int pior, int sm, const pm_pio_config *c)
+{
+    PIO pio = pm_pio_sm_checked(pior, sm);
+    int base = 0;
+    if (!c) error("Invalid PIO configuration");
+    if (c->clock_hz < CLKMIN || c->clock_hz > CLKMAX)
+        error("PIO clock out of range");
+    if (c->start_address < 0 || c->start_address > 31 ||
+        c->wrap_target < 0 || c->wrap_target > 31 ||
+        c->wrap < 0 || c->wrap > 31 || c->wrap_target > c->wrap)
+        error("Invalid PIO wrap or start address");
+    pm_pio_pin_value(c->sideset_base);
+    pm_pio_pin_value(c->set_base);
+    pm_pio_pin_value(c->out_base);
+    pm_pio_pin_value(c->in_base);
+    if (c->jmp_pin < -1 || c->jmp_pin > 31)
+        error("Invalid PIO jump pin");
+    if (c->sideset_count < 0 || c->sideset_count > 5 ||
+        c->set_count < 0 || c->set_count > 5 ||
+        c->out_count < 0 || c->out_count > 31 ||
+        c->sideset_count + c->side_enable > 5 ||
+        c->push_threshold < 0 || c->push_threshold > 31 ||
+        c->pull_threshold < 0 || c->pull_threshold > 31)
+        error("Invalid PIO count or threshold");
+    pm_pio_bool_value(c->sideset_output);
+    pm_pio_bool_value(c->set_output);
+    pm_pio_bool_value(c->out_output);
+    pm_pio_bool_value(c->side_enable);
+    pm_pio_bool_value(c->side_pindir);
+    pm_pio_bool_value(c->autopush);
+    pm_pio_bool_value(c->autopull);
+    pm_pio_bool_value(c->in_shift_right);
+    pm_pio_bool_value(c->out_shift_right);
+    pm_pio_bool_value(c->join_rx_fifo);
+    pm_pio_bool_value(c->join_tx_fifo);
+    pm_pio_bool_value(c->join_rx_get);
+    pm_pio_bool_value(c->join_rx_put);
+    if ((c->join_rx_fifo && c->join_tx_fifo) ||
+        ((c->join_rx_fifo || c->join_tx_fifo) &&
+         (c->join_rx_get || c->join_rx_put)))
+        error("Invalid PIO FIFO configuration");
+#ifndef rp2350
+    if (c->join_rx_get || c->join_rx_put)
+        error("PIO FIFO PUT/GET requires RP2350");
+#else
+    base = pio_get_gpio_base(pio);
+#endif
+    configurePIO(pio, sm, (int)c->clock_hz,
+                 c->start_address, base,
+                 c->sideset_base, c->sideset_count, c->sideset_output,
+                 c->set_base, c->set_count, c->set_output,
+                 c->out_base, c->out_count, c->out_output, c->in_base,
+                 c->jmp_pin, c->wrap_target, c->wrap,
+                 c->side_enable, c->side_pindir,
+                 c->push_threshold, c->pull_threshold,
+                 c->autopush, c->autopull,
+                 c->in_shift_right, c->out_shift_right,
+                 c->join_rx_fifo, c->join_tx_fifo
+#ifdef rp2350
+                 , c->join_rx_get, c->join_rx_put
+#endif
+    );
+}
+void pm_pio_sync_hw(int pior, unsigned my, unsigned prev, unsigned next)
+{
+    (void)pm_pio_checked(pior);
+    if (my < 1u || my > 15u || prev > 15u || next > 15u)
+        error("Invalid PIO synchronisation mask");
+    syncPIO(pior, (int)my, (int)prev, (int)next);
 }
 int pm_pio_available_hw(int pior)
 {
@@ -125,6 +334,47 @@ uint32_t pm_pio_flevel_hw(int pior, int sm, int tx)
     return (value >> (8 * sm + (tx ? 0 : 4))) & 0xfu;
 }
 
+/* BASIC and C use the same FIFO event rules. TX events are generated
+ * on a transition from full to not-full (but not when empty). */
+int pm_pio_fifo_event_hw(int pior, int sm, int tx, uint8_t *last)
+{
+    PIO pio;
+    int level, full, triggered;
+    if (pior < 0 || pior >= PIOMAX || sm < 0 || sm >= 4)
+        error("Invalid PIO state machine");
+#ifdef rp2350
+    pio = pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2);
+#else
+    pio = pior == 0 ? pio0 : pio1;
+#endif
+    if (!tx) return pio_sm_get_rx_fifo_level(pio, (uint)sm) != 0;
+    if (!last) error("PIO TX event needs previous level");
+    level = pio_sm_get_tx_fifo_level(pio, (uint)sm);
+    full = (pio->sm[sm].shiftctrl & (1u << 30)) ? 8 : 4;
+    triggered = level && level != full && *last == full;
+    *last = (uint8_t)level;
+    return triggered;
+}
+/* This is the same completion condition BASIC uses: TX waits for the
+ * state machine's FIFO to drain after the last DMA word. */
+int pm_pio_dma_complete_hw(int tx)
+{
+    PIO pio;
+    int pior = tx ? dma_tx_pio : dma_rx_pio;
+    int sm = tx ? dma_tx_sm : dma_rx_sm;
+    if (tx != 0 && tx != 1) error("Invalid PIO DMA direction");
+    if (dma_channel_is_busy(tx ? dma_tx_chan : dma_rx_chan)) return 0;
+    if (!tx) return 1;
+    pio = pm_pio_sm_checked(pior, sm);
+    return (pio->flevel & (0xfu << (8 * sm))) == 0;
+}
+uintptr_t pm_pio_dma_pointer_hw(int tx)
+{
+    if (tx != 0 && tx != 1) error("Invalid PIO DMA direction");
+    return tx ? dma_hw->ch[dma_tx_chan].read_addr
+              : dma_hw->ch[dma_rx_chan].write_addr;
+}
+
 void pm_pio_dma_stop_hw(int tx)
 {
     unsigned ch,c2;
@@ -153,11 +403,9 @@ void pm_pio_dma_transfer_hw(int tx,int pior,int sm,void *buffer,
         error("Invalid PIO DMA buffer or transfer size");
     if ((uintptr_t)buffer & ((1u<<shift)-1u))
         error("PIO DMA buffer alignment error");
+    if (from_c && *pm_pio_dma_slot(tx) && !pm_pio_dma_is_c_hw(tx))
+        error("PIO DMA callback already owned by BASIC");
     pm_pio_dma_stop_hw(tx);
-    if (from_c) {
-        if (tx) DMAinterruptTX=NULL;
-        else DMAinterruptRX=NULL;
-    }
     if (tx) { dma_tx_pio=pior;dma_tx_sm=sm; }
     else { dma_rx_pio=pior;dma_rx_sm=sm; }
     cfg=dma_channel_get_default_config(chan);

@@ -2,9 +2,12 @@
 #define PICOMITE_PM_PIO_SHARED_H
 #include <stddef.h>
 #include <stdint.h>
+#include "core/tcc/include/picomite/pio.h"
 
 /* Common hardware implementation used directly by both BASIC and C. */
 int pm_pio_available_hw(int pio);
+void pm_pio_configure_hw(int pio, int sm, const pm_pio_config *config);
+void pm_pio_sync_hw(int pio, unsigned my, unsigned prev, unsigned next);
 void pm_pio_exec_hw(int pio, int sm, uint16_t instruction);
 void pm_pio_write_hw(int pio, int sm, uint32_t value);
 int pm_pio_read_hw(int pio, int sm, uint32_t *value);
@@ -25,6 +28,22 @@ uint32_t pm_pio_flevel_hw(int pio, int sm, int tx);
 void pm_pio_dma_transfer_hw(int tx, int pio, int sm, void *buffer,
                             size_t capacity_bytes, uint32_t count,
                             unsigned bits, int from_c);
+/* BASIC and C share the existing PIO/DMA interrupt slots and TX history;
+ * C registrations are tagged so the BASIC dispatcher never executes them. */
+void pm_pio_register_basic_fifo_hw(int pio, int sm, int tx, char *target);
+void pm_pio_register_c_fifo_hw(int pio, int sm, int tx,
+                               void (*callback)(int, int));
+void (*pm_pio_c_fifo_handler_hw(int pio, int sm, int tx))(int, int);
+int pm_pio_fifo_is_c_hw(int pio, int sm, int tx);
+void pm_pio_register_basic_dma_hw(int tx, char *target);
+void pm_pio_register_c_dma_hw(int tx, void (*callback)(int));
+void (*pm_pio_c_dma_handler_hw(int tx))(int);
+int pm_pio_dma_is_c_hw(int tx);
+void pm_pio_unregister_c_handlers_hw(void);
+/* FIFO IRQ conditions and DMA completion/pointer shared with BASIC. */
+int pm_pio_fifo_event_hw(int pio, int sm, int tx, uint8_t *last_level);
+int pm_pio_dma_complete_hw(int tx);
+uintptr_t pm_pio_dma_pointer_hw(int tx);
 void pm_pio_dma_stop_hw(int tx);
 int pm_pio_dma_busy_hw(int tx);
 #endif

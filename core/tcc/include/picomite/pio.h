@@ -39,5 +39,45 @@ void pm_pio_dma_tx(int pio, int sm, const void *buffer,
                    size_t capacity_bytes, uint32_t count, unsigned bits);
 int pm_pio_dma_busy(int tx);
 void pm_pio_dma_stop(int tx);
+/* Read the DMA address register as BASIC PIO(DMA ... POINTER) does.
+ * Only the DMA channel belonging to this C RUN may be queried. */
+uintptr_t pm_pio_dma_pointer(int tx);
+
+/* FIFO event conditions match BASIC PIO INTERRUPT. tx=0: RX nonempty;
+ * tx=1: TX falls from full to a nonzero non-full level.
+ * Callbacks run in normal C context when the API is serviced or pm_pio_poll
+ * is called. They are never executed from an IRQ. Pass NULL to unregister. */
+void pm_pio_on_fifo(int pio, int sm, int tx,
+                    void (*callback)(int pio, int sm));
+/* One-shot completion: RX DMA finishes, or TX DMA and TX FIFO both empty.
+ * Not invoked for continuously retriggered transfers. */
+void pm_pio_on_dma_done(int tx, void (*callback)(int tx));
+void pm_pio_poll(void);
+
+/* PIO CONFIGURE, using the same configurePIO() implementation as BASIC.
+ * GPIO bases use the PIO hardware pin coordinates (0..31), not BASIC pin
+ * designators. All Boolean fields must be 0 or 1. Pass a fully initialized
+ * structure; start_address and wrap fields must refer to loaded PIO code.
+ */
+typedef struct pm_pio_config {
+    unsigned clock_hz;
+    int start_address;
+    int sideset_base, sideset_count, sideset_output;
+    int set_base, set_count, set_output;
+    int out_base, out_count, out_output;
+    int in_base, jmp_pin;
+    int wrap_target, wrap;
+    int side_enable, side_pindir;
+    int push_threshold, pull_threshold;
+    int autopush, autopull, in_shift_right, out_shift_right;
+    int join_rx_fifo, join_tx_fifo;
+    /* RP2350-specific FIFO modes; must be zero on RP2040. */
+    int join_rx_get, join_rx_put;
+} pm_pio_config;
+void pm_pio_configure(int pio, int sm, const pm_pio_config *config);
+
+/* PIO SYNC: masks select SMs in the current/adjacent PIO instances.
+ * A zero prev/next mask means that neighbour is excluded. */
+void pm_pio_sync(int pio, unsigned my, unsigned prev, unsigned next);
 
 #endif
