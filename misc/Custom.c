@@ -1392,13 +1392,10 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int slot = getint(argv[2], 0, 31);
                 int instruction = getint(argv[4], 0, 0xFFFF);
-                pio->instr_mem[slot] = instruction;
+                pm_pio_program_line_hw(pior, slot, (uint16_t)instruction);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"ASSEMBLE");
@@ -2333,20 +2330,8 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
-                for (int sm = 0; sm < 4; sm++)
-                {
-                        hw_clear_bits(&pio->ctrl, 1 << (PIO_CTRL_SM_ENABLE_LSB + sm));
-                        pio->sm[sm].pinctrl = (5 << 26);
-                        pio->sm[sm].execctrl = (0x1f << 12);
-                        pio->sm[sm].shiftctrl = (3 << 18);
-                        pio_sm_clear_fifos(pio, sm);
-                }
-                pio->irq = 255; // clear all irq in the statemachines on the pio
-                pio_clear_instruction_memory(pio);
+                pm_pio_clear_hw(pior);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"MAKE RING BUFFER");
@@ -2377,16 +2362,10 @@ void MIPS16 cmd_pio(void)
         tp = checkstring(cmdline, (unsigned char *)"PROGRAM");
         if (tp)
         {
-                struct pio_program program = {0}; // zero pio_version/used_gpio_ranges:
-                                                  // SDK rejects the load (no instructions
-                                                  // written) if pio_version is stack garbage
                 getcsargs(&tp, 3);
                 if (argc != 3)
                         SyntaxError();
                 ;
-                //        void *prt1;
-                program.length = 32;
-                program.origin = 0;
                 int64_t *a1int = NULL;
                 int pior = getint(argv[0], 0, PIOMAX - 1);
                 if (PIO0 == false && pior == 0)
@@ -2396,19 +2375,11 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int toarraysize = parseintegerarray(argv[2], &a1int, 2, 1, dims, true, NULL);
                 if (toarraysize != 8)
                         StandardError(17);
-                program.instructions = (const uint16_t *)a1int;
-                for (int sm = 0; sm < 4; sm++)
-                        hw_clear_bits(&pio->ctrl, 1 << (PIO_CTRL_SM_ENABLE_LSB + sm));
-                pio_clear_instruction_memory(pio);
-                if (pio_add_program(pio, &program) < 0) // negative = SDK refused the load
-                        error("PIO program load failed");
+                pm_pio_program_hw(pior, (const uint16_t *)a1int, 32);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"SYNC");
@@ -2909,22 +2880,19 @@ void fun_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 if (argc == 1)
-                        iret = pio->flevel; // jmp pin
+                        iret = pm_pio_flevel_hw(pior, -1, 0);
                 else
                 {
                         if (argc != 5)
                                 SyntaxError();
                         ;
-                        int sm = getint(argv[2], 0, 3) * 8;
+                        int sm = getint(argv[2], 0, 3);
                         if (checkstring(argv[4], (unsigned char *)"TX"))
-                                iret = ((pio->flevel) >> sm) & 0xf;
+                                iret = pm_pio_flevel_hw(pior, sm, 1);
                         else if (checkstring(argv[4], (unsigned char *)"RX"))
-                                iret = ((pio->flevel) >> (sm + 4)) & 0xf;
+                                iret = pm_pio_flevel_hw(pior, sm, 0);
                         else
                                 SyntaxError();
                         ;

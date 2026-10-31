@@ -78,6 +78,53 @@ void pm_pio_init_hw(int pior,int sm,uint32_t pinctrl,uint32_t execctrl,
              sideout!=0,setout!=0,outout!=0);
 }
 
+/* PIO PROGRAM, PROGRAM LINE and CLEAR use the same implementation
+ * for BASIC and native C. PIO PROGRAM deliberately replaces the whole
+ * 32-word instruction memory, matching the BASIC operation. */
+void pm_pio_program_hw(int pior, const uint16_t *words, size_t count)
+{
+    PIO pio = pm_pio_checked(pior);
+    struct pio_program program = {0};
+    if (!words || count == 0 || count > 32)
+        error("Invalid PIO program size");
+    program.instructions = words;
+    program.length = (uint)count;
+    program.origin = 0;
+    for (int sm = 0; sm < 4; ++sm)
+        hw_clear_bits(&pio->ctrl, 1u << (PIO_CTRL_SM_ENABLE_LSB + sm));
+    pio_clear_instruction_memory(pio);
+    if (pio_add_program(pio, &program) < 0)
+        error("PIO program load failed");
+}
+void pm_pio_program_line_hw(int pior, int slot, uint16_t instruction)
+{
+    PIO pio = pm_pio_checked(pior);
+    if (slot < 0 || slot >= 32) error("Invalid PIO instruction slot");
+    pio->instr_mem[slot] = instruction;
+}
+void pm_pio_clear_hw(int pior)
+{
+    PIO pio = pm_pio_checked(pior);
+    for (int sm = 0; sm < 4; sm++) {
+        hw_clear_bits(&pio->ctrl, 1u << (PIO_CTRL_SM_ENABLE_LSB + sm));
+        pio->sm[sm].pinctrl = (5u << 26);
+        pio->sm[sm].execctrl = (0x1fu << 12);
+        pio->sm[sm].shiftctrl = (3u << 18);
+        pio_sm_clear_fifos(pio, sm);
+    }
+    pio->irq = 255;
+    pio_clear_instruction_memory(pio);
+}
+uint32_t pm_pio_flevel_hw(int pior, int sm, int tx)
+{
+    PIO pio = pm_pio_checked(pior);
+    uint32_t value = pio->flevel;
+    if (sm == -1) return value;
+    if (sm < 0 || sm >= 4 || (tx != 0 && tx != 1))
+        error("Invalid PIO FIFO selection");
+    return (value >> (8 * sm + (tx ? 0 : 4))) & 0xfu;
+}
+
 void pm_pio_dma_stop_hw(int tx)
 {
     unsigned ch,c2;

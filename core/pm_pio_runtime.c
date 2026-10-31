@@ -1,5 +1,5 @@
-/* C entry points for the EXISTING BASIC PIO hardware implementation.
- * All underlying operations are in misc/Custom.c. No second PIO driver. */
+/* Native C entry points to the hardware implementation shared with BASIC.
+ * PIO operations live in core/pm_pio_shared.c; BASIC calls the same helpers. */
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "core/pm_api.h"
@@ -100,6 +100,67 @@ void pm_pio_init_machine(int pio,int sm,uint32_t pinctrl,uint32_t execctrl,
         {pio,sm,pinctrl,execctrl,shiftctrl,start,clock,sideout,setout,outout};
     pm_core_call(pm_pio_init_do,&a);
 }
+typedef struct {
+    int pio;
+    const uint16_t *words;
+    size_t count;
+} pm_pio_program_args;
+/* Replacing instruction memory stops all four SMs; a running DMA
+ * must first be stopped by its owner to avoid stranding a transfer. */
+static void pm_pio_require_idle_dma(void)
+{
+    if ((pm_c_dma_owned & 1u) && pm_pio_dma_busy_hw(0))
+        error("Stop C DMA RX before replacing PIO program");
+    if ((pm_c_dma_owned & 2u) && pm_pio_dma_busy_hw(1))
+        error("Stop C DMA TX before replacing PIO program");
+}
+static void pm_pio_program_do(void *arg)
+{
+    const pm_pio_program_args *a = arg;
+    pm_pio_require_run();
+    pm_pio_require_idle_dma();
+    pm_pio_program_hw(a->pio, a->words, a->count);
+    pm_c_sm_owned[a->pio] = 0; /* PROGRAM stops all SMs on the block */
+}
+void pm_pio_program(int pio, const uint16_t *words, size_t count)
+{
+    pm_pio_program_args args = {pio, words, count};
+    pm_core_call(pm_pio_program_do, &args);
+}
+static void pm_pio_program_line_do(void *arg)
+{
+    int *a = arg;
+    pm_pio_require_run();
+    pm_pio_program_line_hw(a[0], a[1], (uint16_t)a[2]);
+}
+void pm_pio_program_line(int pio, int slot, uint16_t instruction)
+{
+    int args[] = {pio, slot, instruction};
+    pm_core_call(pm_pio_program_line_do, args);
+}
+static void pm_pio_clear_do(void *arg)
+{
+    int pio = *(int *)arg;
+    pm_pio_require_run();
+    pm_pio_require_idle_dma();
+    pm_pio_clear_hw(pio);
+    pm_c_sm_owned[pio] = 0; /* CLEAR stops all SMs on the block */
+}
+void pm_pio_clear(int pio)
+{ pm_core_call(pm_pio_clear_do, &pio); }
+static void pm_pio_flevel_do(void *arg)
+{
+    struct {int pio, sm, tx; uint32_t level;} *a = arg;
+    pm_pio_require_run();
+    a->level = pm_pio_flevel_hw(a->pio, a->sm, a->tx);
+}
+uint32_t pm_pio_flevel(int pio, int sm, int tx)
+{
+    struct {int pio, sm, tx; uint32_t level;} args = {pio, sm, tx, 0};
+    pm_core_call(pm_pio_flevel_do, &args);
+    return args.level;
+}
+
 static void pm_pio_available_do(void *p)
 { int *a=p; a[1]=pm_pio_available_hw(a[0]); }
 int pm_pio_available(int pio)
@@ -162,6 +223,10 @@ static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_start)
     PM_PIO_SYM(pm_pio_stop)
     PM_PIO_SYM(pm_pio_init_machine)
+    PM_PIO_SYM(pm_pio_program)
+    PM_PIO_SYM(pm_pio_program_line)
+    PM_PIO_SYM(pm_pio_clear)
+    PM_PIO_SYM(pm_pio_flevel)
     PM_PIO_SYM(pm_pio_dma_rx)
     PM_PIO_SYM(pm_pio_dma_tx)
     PM_PIO_SYM(pm_pio_dma_busy)

@@ -14,6 +14,12 @@ void pm_pio_init_hw(int pio, int sm, uint32_t pinctrl, uint32_t execctrl,
                     uint32_t shiftctrl, int start, float clock,
                     int sideout, int setout, int outout);
 
+/* Shared with BASIC PIO PROGRAM / PROGRAM LINE / CLEAR / PIO(FLEVEL). */
+void pm_pio_program_hw(int pio, const uint16_t *words, size_t count);
+void pm_pio_program_line_hw(int pio, int slot, uint16_t instruction);
+void pm_pio_clear_hw(int pio);
+uint32_t pm_pio_flevel_hw(int pio, int sm, int tx);
+
 /* DMA transfer size in bits: 8, 16 or 32. count is number of samples.
  * Caller retains the buffer while DMA is active. 1 = TX, 0 = RX. */
 void pm_pio_dma_transfer_hw(int tx, int pio, int sm, void *buffer,
