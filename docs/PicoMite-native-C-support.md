@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 15.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 16.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -663,6 +663,31 @@ here applies to the expanded RP2350 runtime.
 | 13 | `pio.h`: BASIC-shared PIO PROGRAM / PROGRAM LINE / CLEAR and FIFO occupancy queries |
 | 14 | `pio.h`: FIFO RX/TX callback polling, DMA completion callbacks and DMA address pointers; BASIC interrupt conditions shared with C |
 | 15 | `pio.h`: PIO CONFIGURE and SYNC through the existing BASIC hardware implementation; no duplicate driver |
+| 16 | `pio.h`: automatic safe-target probe (`pm_pio_idle`), BASIC-shared RP2350 PIO WRITEFIFO and SET BASE |
+
+PIO/DMA notes for API v16:
+
+- `C/pm_pio_loopback_test.c` runs unchanged on firmware with this API on
+  RP2040 and RP2350: no `TEST_PIO_BLOCK` or compile-time board selection.
+  It prints `available` and `idle` for each PIO, chooses the first eligible
+  block, and exercises FIFO events and one-shot RX/TX DMA. `SKIP` means no
+  idle block was found, **not** that loopback passed. There are no GPIO wires.
+- `pm_pio_idle()` checks firmware PIO reservation, enabled SMs, registered
+  FIFO interrupts, active PIO DMA and SDK-managed instruction allocations.
+  Direct BASIC `PIO PROGRAM LINE` writes are not tracked by the SDK, so this
+  is not a general resource-ownership test: the loopback calls `PIO CLEAR`
+  and `PIO PROGRAM`, replacing instruction memory of the selected block.
+- BASIC and C use the same RX/TX DMA channels and existing BASIC event
+  arrays. The RX/TX reload address words were moved from function-local
+  `static` declarations to file scope (`pio_dma_rx_address` and
+  `pio_dma_tx_address`), without increasing static RAM. This makes them
+  available to the common DMA engine.
+- C DMA RX/TX currently supports **one-shot transfers only**. Circular RX,
+  TX ring and continuously retriggered modes of BASIC are not yet exported
+  to C. One-shot buffers must remain owned by the running C program and are
+  stopped before its memory is freed.
+- `pm_pio_writefifo` and `pm_pio_set_base` mirror the RP2350-only BASIC
+  operations; RP2040 firmware reports an unsupported-operation error.
 
 Native PCM uses signed 16-bit mono/stereo frames, not bytes. `pm_pcm_play()`
 copies the buffer into firmware memory and may outlive `RUN "file.c"`;

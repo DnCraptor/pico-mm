@@ -195,6 +195,20 @@ void pm_pio_sync(int pio, unsigned my, unsigned prev, unsigned next)
     struct {int pio; unsigned my,prev,next;} a = {pio,my,prev,next};
     pm_core_call(pm_pio_sync_do, &a);
 }
+static void pm_pio_idle_do(void *p)
+{ int *a=p; a[1]=pm_pio_idle_hw(a[0]); }
+int pm_pio_idle(int pio)
+{ int a[]={pio,0};pm_core_call(pm_pio_idle_do,a);return a[1]; }
+static void pm_pio_writefifo_do(void *p)
+{ struct {int pio,sm,fifo;uint32_t value;} *a=p;
+  pm_pio_require_run();pm_pio_writefifo_hw(a->pio,a->sm,a->fifo,a->value); }
+void pm_pio_writefifo(int pio,int sm,int fifo,uint32_t value)
+{ struct {int pio,sm,fifo;uint32_t value;} a={pio,sm,fifo,value};
+  pm_core_call(pm_pio_writefifo_do,&a); }
+static void pm_pio_set_base_do(void *p)
+{ int *a=p;pm_pio_require_run();pm_pio_set_base_hw(a[0],a[1]); }
+void pm_pio_set_base(int pio,int base)
+{ int a[]={pio,base};pm_core_call(pm_pio_set_base_do,a); }
 static void pm_pio_available_do(void *p)
 { int *a=p; a[1]=pm_pio_available_hw(a[0]); }
 int pm_pio_available(int pio)
@@ -338,6 +352,9 @@ typedef struct {const char *name;const void *address;} pm_pio_symbol;
 #define PM_PIO_SYM(n) {#n,(const void *)&n},
 static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_available)
+    PM_PIO_SYM(pm_pio_idle)
+    PM_PIO_SYM(pm_pio_writefifo)
+    PM_PIO_SYM(pm_pio_set_base)
     PM_PIO_SYM(pm_pio_exec)
     PM_PIO_SYM(pm_pio_write)
     PM_PIO_SYM(pm_pio_read)

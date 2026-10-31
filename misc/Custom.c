@@ -99,6 +99,10 @@ char *pioTXinterrupts[4][3] = {0};
 uint8_t pioTXlast[4][3] = {0};
 char *DMAinterruptRX = NULL;
 char *DMAinterruptTX = NULL;
+/* Stable reload-address words for the BASIC/C shared RX and TX DMA channels.
+ * Control DMA may access these after the command handler returns. */
+uint32_t *pio_dma_rx_address = NULL;
+uint32_t *pio_dma_tx_address = NULL;
 uint32_t dma_rx_chan = PIO_RX_DMA;
 uint32_t dma_tx_chan = PIO_TX_DMA;
 uint32_t dma_rx_chan2 = PIO_RX_DMA2;
@@ -929,11 +933,12 @@ void MIPS16 cmd_pio(void)
                 dma_rx_sm = sm;
                 int nbr = getint(argv[4], 0, 0xFFFFFFFF);
                 uint32_t s_nbr = nbr;
-                static uint32_t *a1int = NULL;
+                uint32_t *a1int;
                 int64_t *aint = NULL;
                 int toarraysize = parseintegerarray(argv[6], &aint, 4, 1, dims, true, NULL);
                 RequireGlobal(aint); // DMA uses it after the command returns
                 a1int = (uint32_t *)aint;
+                pio_dma_rx_address = a1int;
                 if (argc >= 9 && *argv[8])
                 {
                         if (nbr == 0)
@@ -992,7 +997,7 @@ void MIPS16 cmd_pio(void)
                                         dma_channel_configure(dma_rx_chan2,
                                                               &c2,
                                                               &dma_hw->ch[dma_rx_chan].al2_write_addr_trig,
-                                                              &a1int,
+                                                              &pio_dma_rx_address,
                                                               1,
                                                               false); // Configure control channel
                                 }
@@ -1067,11 +1072,12 @@ void MIPS16 cmd_pio(void)
                 dma_tx_sm = sm;
                 uint32_t nbr = getint(argv[4], 0, 0xFFFFFFFF);
 
-                static uint32_t *a1int = NULL;
+                uint32_t *a1int;
                 int64_t *aint = NULL;
                 int toarraysize = parseintegerarray(argv[6], &aint, 4, 1, dims, true, NULL);
                 RequireGlobal(aint); // DMA uses it after the command returns
                 a1int = (uint32_t *)aint;
+                pio_dma_tx_address = a1int;
 
                 // Get optional size parameter (argc == 13)
                 uint32_t size = 0;
@@ -1211,7 +1217,7 @@ void MIPS16 cmd_pio(void)
                         dma_channel_configure(dma_tx_chan2,
                                               &c2,
                                               &dma_hw->ch[dma_tx_chan].al3_read_addr_trig,
-                                              &a1int,
+                                              &pio_dma_tx_address,
                                               1,
                                               false);
 
@@ -1242,7 +1248,7 @@ void MIPS16 cmd_pio(void)
                         dma_channel_configure(dma_tx_chan2,
                                               &c2,
                                               &dma_hw->ch[dma_tx_chan].al3_read_addr_trig,
-                                              &a1int,
+                                              &pio_dma_tx_address,
                                               1,
                                               false);
 
@@ -1355,16 +1361,9 @@ void MIPS16 cmd_pio(void)
         {
                 getcsargs(&tp, 7);
                 int pior = getint(argv[0], 0, PIOMAX - 1);
-                if (PIO0 == false && pior == 0)
-                        StandardError(3);
-                if (PIO1 == false && pior == 1)
-                        StandardError(4);
-                if (PIO2 == false && pior == 2)
-                        StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
                 int sm = getint(argv[2], 0, 3);
                 int fifo = getint(argv[4], 0, 3);
-                pio->rxf_putget[sm][fifo] = getint(argv[6], 0, 0xFFFFFFFF); // jmp pin
+                pm_pio_writefifo_hw(pior, sm, fifo, (uint32_t)getint(argv[6], 0, 0xFFFFFFFF));
                 targ = T_INT;
                 return;
         }
@@ -2480,23 +2479,8 @@ void MIPS16 cmd_pio(void)
                         SyntaxError();
                 ;
                 int pior = getint(argv[0], 0, PIOMAX - 1);
-                if (PIO0 == false && pior == 0)
-                        StandardError(3);
-                if (PIO1 == false && pior == 1)
-                        StandardError(4);
-#ifdef rp2350
-                if (PIO2 == false && pior == 2)
-                        StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
-#endif
                 int i = getinteger(argv[2]);
-                if (!(i == 0 || i == 16))
-                        error("Valid base values are 0 and 16");
-                if (rp2350a && i == 16)
-                        error("Invalid for 60-pin chip");
-                pio_set_gpio_base(pio, i);
+                pm_pio_set_base_hw(pior, i);
                 return;
         }
 #endif

@@ -1,17 +1,13 @@
-/* On-chip PIO loopback with no external pins. Requires an otherwise idle
- * PIO block. Change TEST_PIO_BLOCK to a free block for your board.
- * PIO PROGRAM / CLEAR affect ALL SMs in that block, including video/audio!
- */
+/* On-chip PIO loopback without wires or target-specific recompile.
+ * Automatically selects a block reported idle by the firmware.  Run only
+ * when other BASIC programs are not relying on preloaded PIO instructions:
+ * PROGRAM/CLEAR replace ALL 32 instructions in the selected block. */
 #include <picomite/pio.h>
 #include <picomite/system.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef TEST_PIO_BLOCK
-#define TEST_PIO_BLOCK (-1) /* safe default: non-destructive probe only */
-#endif
 
 static volatile int rx_events, rx_dma_done, tx_dma_done;
 static void on_fifo(int pio, int sm) { (void)pio; (void)sm; ++rx_events; }
@@ -24,23 +20,25 @@ static const uint16_t echo_program[] = {
 };
 int main(void)
 {
-    const int pio = TEST_PIO_BLOCK, sm = 0;
+    int pio = -1;
+    const int sm = 0;
     unsigned i;
     uint32_t got = 0;
     uint32_t *tx = NULL, *rx = NULL;
     int result = 1, armed_rx = 0, armed_tx = 0;
     pm_pio_config config = {0};
     unsigned long long deadline;
-    for (i = 0; i < 3; ++i)
-        printf("PIO%u available=%d\n", i, pm_pio_available((int)i));
+    for (i = 0; i < 3; ++i) {
+        int available = pm_pio_available((int)i);
+        int idle = pm_pio_idle((int)i);
+        printf("PIO%u: available=%d idle=%d\n", i, available, idle);
+        if (pio < 0 && idle) pio = (int)i;
+    }
     if (pio < 0) {
-        puts("Non-destructive probe passed. Define TEST_PIO_BLOCK for loopback.");
+        puts("SKIP: no available idle PIO block (video/audio may reserve it)");
         return 0;
     }
-    if (!pm_pio_available(pio)) {
-        puts("Selected PIO block reserved by firmware");
-        return 2;
-    }
+    printf("Testing PIO%d SM%d\n",pio,sm);
     pm_pio_clear(pio);
     pm_pio_program(pio, echo_program, 4);
     config.clock_hz = 15000000;

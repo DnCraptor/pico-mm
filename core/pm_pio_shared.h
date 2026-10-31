@@ -4,8 +4,16 @@
 #include <stdint.h>
 #include "core/tcc/include/picomite/pio.h"
 
+/* Common reload-address storage for DMA channel chaining. Reuses the two
+ * static pointer words previously local to BASIC cmd_pio(). */
+extern uint32_t *pio_dma_rx_address;
+extern uint32_t *pio_dma_tx_address;
+
 /* Common hardware implementation used directly by both BASIC and C. */
 int pm_pio_available_hw(int pio);
+int pm_pio_idle_hw(int pio);
+void pm_pio_writefifo_hw(int pio,int sm,int fifo,uint32_t value);
+void pm_pio_set_base_hw(int pio,int base);
 void pm_pio_configure_hw(int pio, int sm, const pm_pio_config *config);
 void pm_pio_sync_hw(int pio, unsigned my, unsigned prev, unsigned next);
 void pm_pio_exec_hw(int pio, int sm, uint16_t instruction);

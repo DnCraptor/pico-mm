@@ -258,6 +258,57 @@ int pm_pio_available_hw(int pior)
 #endif
     return 0;
 }
+/* This is a non-destructive eligibility check for self-tests.  A PIO block
+ * with disabled SMs can still contain PROGRAM LINE instructions because
+ * direct register writes are not tracked by the SDK program allocator. */
+int pm_pio_idle_hw(int pior)
+{
+    PIO pio;
+    int sm;
+    /* SDK tracks instruction slots allocated by pio_add_program().
+     * Dummy instructions are in FLASH; this only queries availability. */
+    static const uint16_t blank = 0;
+    struct pio_program probe = {0};
+    unsigned offset;
+    if (!pm_pio_available_hw(pior)) return 0;
+    pio = pm_pio_checked(pior);
+    probe.instructions = &blank;
+    probe.length = 1;
+    probe.origin = -1;
+    for (offset = 0; offset < PIO_INSTRUCTION_COUNT; ++offset)
+        if (!pio_can_add_program_at_offset(pio, &probe, offset)) return 0;
+    if (pio->ctrl & (0xfu << PIO_CTRL_SM_ENABLE_LSB)) return 0;
+    for (sm = 0; sm < 4; ++sm)
+        if (pioRXinterrupts[sm][pior] || pioTXinterrupts[sm][pior])
+            return 0;
+    if ((dma_rx_pio == pior && pm_pio_dma_busy_hw(0)) ||
+        (dma_tx_pio == pior && pm_pio_dma_busy_hw(1))) return 0;
+    return 1;
+}
+/* RP2350 extensions of BASIC PIO WRITEFIFO and SET BASE.  No new state. */
+void pm_pio_writefifo_hw(int pior,int sm,int fifo,uint32_t value)
+{
+#ifdef rp2350
+    PIO pio = pm_pio_sm_checked(pior,sm);
+    if (fifo < 0 || fifo > 3) error("Invalid PIO FIFO index");
+    pio->rxf_putget[sm][fifo] = value;
+#else
+    (void)pior; (void)sm; (void)fifo; (void)value;
+    error("PIO WRITEFIFO requires RP2350");
+#endif
+}
+void pm_pio_set_base_hw(int pior,int base)
+{
+#ifdef rp2350
+    PIO pio = pm_pio_checked(pior);
+    if (base != 0 && base != 16) error("Valid base values are 0 and 16");
+    if (rp2350a && base == 16) error("Invalid for 60-pin chip");
+    pio_set_gpio_base(pio,base);
+#else
+    (void)pior; (void)base;
+    error("PIO SET BASE requires RP2350");
+#endif
+}
 void pm_pio_exec_hw(int pior,int sm,uint16_t instr)
 { pio_sm_exec(pm_pio_sm_checked(pior,sm),sm,instr); }
 void pm_pio_write_hw(int pior,int sm,uint32_t value)

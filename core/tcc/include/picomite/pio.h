@@ -7,6 +7,15 @@
 /* All operations require a running C program. Availability depends on
  * firmware resources (HDMI/video, USB and CYW43 may reserve PIO blocks). */
 int pm_pio_available(int pio);
+/* 1 only if firmware hasn't reserved the block, all its SMs are disabled,
+ * no PIO FIFO event handlers are installed and no PIO DMA is active there.
+ * Checks SDK instruction reservations too, but cannot detect instructions
+ * written directly through BASIC PIO PROGRAM LINE. */
+int pm_pio_idle(int pio);
+/* RP2350-only BASIC PIO WRITEFIFO / SET BASE extensions. On RP2040 these
+ * report a PicoMite error rather than touching unsupported registers. */
+void pm_pio_writefifo(int pio,int sm,int fifo,uint32_t value);
+void pm_pio_set_base(int pio,int base);
 void pm_pio_exec(int pio, int sm, uint16_t instruction);
 void pm_pio_write(int pio, int sm, uint32_t value);
 /* Returns 1 when a word was read, 0 when RX FIFO was empty. */
