@@ -16,7 +16,7 @@
 #include <setjmp.h>
 #include "pico/time.h"
 
-#define PM_RUNTIME_VERSION 11u
+#define PM_RUNTIME_VERSION 12u
 
 typedef union pm_runtime_block {
     struct {
@@ -61,6 +61,9 @@ void pm_runtime_files_end(void);
 void pm_runtime_tick_reset(void);
 void pm_runtime_periph_begin(void);
 void pm_runtime_periph_end(void);
+void pm_pio_runtime_begin(void);
+void pm_pio_runtime_end(void);
+void pm_pio_runtime_before_free(const void *allocation, size_t size);
 const void *pm_runtime_basic_resolve(const char *name);
 unsigned pm_runtime_basic_firmware_id(void);
 const void *pm_runtime_peripheral_resolve(const char *name);
@@ -77,6 +80,7 @@ void pm_runtime_begin(void)
     pm_runtime_files_begin();
     pm_runtime_tick_reset();
     pm_runtime_periph_begin();
+    pm_pio_runtime_begin();
 }
 
 void pm_runtime_end(void)
@@ -86,6 +90,7 @@ void pm_runtime_end(void)
      * Detach it before releasing the program's allocations. */
     PCMRunCleanup();
     pm_runtime_files_end();
+    pm_pio_runtime_end();
     pm_runtime_periph_end();
     pm_runtime_tick_reset();
     b = pm_runtime_blocks;
@@ -141,11 +146,24 @@ void pm_runtime_free(void *ptr)
     for (it = &pm_runtime_blocks; *it; it = &(*it)->s.next) {
         if (*it != b) continue;
         *it = b->s.next;
+        pm_pio_runtime_before_free(ptr, b->s.size);
         FreeMemory(b);
         return;
     }
 }
 
+bool pm_runtime_owns_range(const void *ptr, size_t size)
+{
+    const pm_runtime_block *b;
+    uintptr_t p = (uintptr_t)ptr;
+    if (!ptr || !pm_runtime_is_running()) return false;
+    for (b = pm_runtime_blocks; b; b = b->s.next) {
+        uintptr_t start = (uintptr_t)(b + 1);
+        if (p >= start && p - start <= b->s.size &&
+            size <= b->s.size - (p - start)) return true;
+    }
+    return false;
+}
 void *pm_runtime_malloc(size_t size) { return pm_runtime_alloc(size, 0); }
 void *pm_runtime_calloc(size_t n, size_t size)
 {
@@ -241,7 +259,11 @@ bool pm_runtime_csub_forbidden(const char *name)
         "pm_i2c_open", "pm_i2c_close", "pm_i2c_transfer",
         "pm_i2c_read", "pm_i2c_write", "pm_i2c_probe",
         "pm_spi_open", "pm_spi_close", "pm_spi_transfer",
-        "pm_spi_write", "pm_spi_read", NULL
+        "pm_spi_write", "pm_spi_read",
+        "pm_pio_available", "pm_pio_exec", "pm_pio_write", "pm_pio_read",
+        "pm_pio_start", "pm_pio_stop", "pm_pio_init_machine",
+        "pm_pio_dma_rx", "pm_pio_dma_tx", "pm_pio_dma_busy",
+        "pm_pio_dma_stop", NULL
     };
     const char *const *p;
     for (p = unsafe; *p; ++p)
@@ -549,6 +571,7 @@ static const pm_runtime_symbol pm_runtime_symbols[] = {
 #undef PM_RUNTIME_AS
 const void *pm_runtime_stdio_resolve(const char *name);
 unsigned pm_runtime_stdio_firmware_id(void);
+extern const void *pm_pio_resolve_symbol(const char *name);
 const void *pm_runtime_resolve_symbol(const char *name)
 {
     unsigned i;
@@ -561,7 +584,9 @@ const void *pm_runtime_resolve_symbol(const char *name)
         found = pm_runtime_basic_resolve(name);
         if (found) return found;
         found = pm_runtime_peripheral_resolve(name);
-        return found ? found : pm_runtime_commands_resolve(name);
+        if (found) return found;
+        found = pm_runtime_commands_resolve(name);
+        return found ? found : pm_pio_resolve_symbol(name);
     }
 }
 unsigned pm_runtime_firmware_id(void)

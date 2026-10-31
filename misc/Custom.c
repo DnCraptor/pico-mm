@@ -88,6 +88,7 @@ they may be changed and you would then need to re insert your changes in a new r
 #include "pico/stdlib.h"
 #include "hardware/irq.h"
 #include "hardware/claim.h"
+#include "core/pm_pio_shared.h"
 #define CLKMIN ((Option.CPU_Speed * 125) >> 13)
 #define CLKMAX (Option.CPU_Speed * 1000)
 
@@ -841,14 +842,11 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
                 for (i = 4; i < argc; i += 2)
                 {
-                        pio_sm_exec(pio, sm, getint(argv[i], 0, 65535));
+                        pm_pio_exec_hw(pior, sm, (uint16_t)getint(argv[i], 0, 65535));
                 }
                 return;
         }
@@ -871,15 +869,12 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
                 int count = getint(argv[4], 0, MAX_ARG_COUNT - 3);
                 while (count--)
                 {
-                        pio_sm_put_blocking(pio, sm, getint(argv[i], 0, (int64_t)0xFFFFFFFF));
+                        pm_pio_write_hw(pior, sm, (uint32_t)getint(argv[i], 0, (int64_t)0xFFFFFFFF));
                         i += 2;
                 }
                 return;
@@ -949,6 +944,11 @@ void MIPS16 cmd_pio(void)
                                 dmasize = DMA_SIZE_16;
                         else if (dmasize == 32)
                                 dmasize = DMA_SIZE_32;
+                }
+                if (s_nbr && argc != 13) {
+                        pm_pio_dma_transfer_hw(0, pior, sm, a1int,
+                                (size_t)toarraysize * 8u, nbr, 8u << dmasize, 0);
+                        return;
                 }
                 dma_channel_config c = dma_channel_get_default_config(dma_rx_chan);
                 channel_config_set_read_increment(&c, false);
@@ -1163,6 +1163,11 @@ void MIPS16 cmd_pio(void)
                 }
 
                 // Configure primary DMA channel
+                if (!ring_mode && !continuous_retrigger) {
+                        pm_pio_dma_transfer_hw(1, pior, sm, a1int,
+                                (size_t)toarraysize * 8u, nbr, 8u << dmasize, 0);
+                        return;
+                }
                 dma_channel_config c = dma_channel_get_default_config(dma_tx_chan);
                 channel_config_set_write_increment(&c, false);
 
@@ -1328,9 +1333,6 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
                 nbr = getinteger(argv[4]);
@@ -1348,17 +1350,10 @@ void MIPS16 cmd_pio(void)
                 else
                         StandardError(6);
 
-                uint32_t rxunder = 1u << (PIO_FDEBUG_RXUNDER_LSB + sm);
                 while (nbr--)
                 {
-                        pio->fdebug = rxunder; // clear sticky underflow before the read
-                        *dd = pio_sm_get(pio, sm);
-                        if (pio->fdebug & rxunder) // this read drained an empty FIFO
-                        {
-                                *dd = -1;              // -> data is invalid, mark it
-                                pio->fdebug = rxunder; // clear the flag we just consumed
-                        }
-                        dd++;
+                        uint32_t sample;
+                        *dd++ = pm_pio_read_hw(pior, sm, &sample) ? (int64_t)sample : -1;
                 }
                 return;
         }
@@ -2448,12 +2443,9 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
-                startPIO(pio, sm);
+                pm_pio_start_hw(pior, sm);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"STOP");
@@ -2471,12 +2463,9 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
-                pio_sm_set_enabled(pio, sm, false);
+                pm_pio_stop_hw(pior, sm);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"INIT MACHINE");
@@ -2516,7 +2505,7 @@ void MIPS16 cmd_pio(void)
                         setout = getint(argv[16], 0, 1);
                 if (argc > 17 && *argv[18])
                         outout = getint(argv[18], 0, 1);
-                pio_init(pior, sm, pinctrl, execctrl, shiftctrl, start, clock, sideout, setout, outout);
+                pm_pio_init_hw(pior, sm, pinctrl, execctrl, shiftctrl, start, clock, sideout, setout, outout);
                 return;
         }
 #ifdef rp2350

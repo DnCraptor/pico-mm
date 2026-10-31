@@ -71,6 +71,8 @@ set(COMMON_SOURCES
 	core/pm_runtime_stdio.c
 	core/pm_basic_runtime.c
 	core/pm_peripheral_runtime.c
+	core/pm_pio_shared.c
+	core/pm_pio_runtime.c
 	core/pm_runtime_commands.c
 	core/pm_api_extra.c
 	core/MMBasic.c
