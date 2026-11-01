@@ -159,16 +159,26 @@ def main():
     # The corpus stays on A:/g between runs. Send a file only if the board lacks
     # it or has a different size (a firmware update that moved the flash offset
     # wipes A:), or everything with --put.
-    onboard = {}
-    if "--put" not in sys.argv:
-        listing = b.cmd('f$=Dir$("%s/*",FILE):Do While f$<>"":Print f$;"|";MM.INFO(FILESIZE "%s/"+f$):f$=Dir$():Loop' % (gdir, gdir), 60)
-        for line in listing.splitlines():
-            if "|" in line:
-                name, size = line.rsplit("|", 1)
-                if size.strip().isdigit():
-                    onboard[name.strip().lower()] = int(size)
+    def onboard_sizes(d):
+        sizes = {}
+        if "--put" not in sys.argv:
+            listing = b.cmd('f$=Dir$("%s/*",FILE):Do While f$<>"":Print f$;"|";MM.INFO(FILESIZE "%s/"+f$):f$=Dir$():Loop' % (d, d), 60)
+            for line in listing.splitlines():
+                if "|" in line:
+                    name, size = line.rsplit("|", 1)
+                    if size.strip().isdigit():
+                        sizes[name.strip().lower()] = int(size)
+        return sizes
+
     files = [n + ".bas" for n in names]   # every file first: some programs run or read others
     files += [f for f in os.listdir(corpus) if f.endswith((".dat", ".txt", ".csv"))]
+    # lib/ holds the sources LIBRARY LOAD reads (libload.bas)
+    if os.path.isdir(os.path.join(corpus, "lib")):
+        b.cmd('MKDIR "%s/lib"' % gdir, 10)
+        files += ["lib/" + f for f in sorted(os.listdir(os.path.join(corpus, "lib"))) if f.endswith(".bas")]
+    onboard = {}
+    for d in sorted({os.path.dirname(f) for f in files}):
+        onboard.update({(d + "/" + k if d else k): v for k, v in onboard_sizes(gdir + ("/" + d if d else "")).items()})
     sent = 0
     for f in files:
         data = open(os.path.join(corpus, f), "rb").read()
@@ -176,10 +186,19 @@ def main():
             b.xmodem_send(gdir + "/" + f, data)
             sent += 1
     print("sent %d of %d files to %s" % (sent, len(files), gdir), flush=True)
+    # A program that installs a library (LIBRARY LOAD, as libload.bas does with its O) leaves it installed, and
+    # every later program would run the library's top level first, so it is deleted after that program. A library
+    # the board had before the run is never touched: such programs are skipped instead.
+    board_lib = bool(b.cmd("LIBRARY LIST ALL", 30).strip())
     rows = []
     for n in names:
         inp = os.path.join(corpus, n + ".in")
         inputs = open(inp, encoding="latin-1").read().splitlines() if os.path.exists(inp) else []
+        uses_lib = re.search(r"(?im)^\s*library\s+load\b", open(os.path.join(corpus, n + ".bas"), encoding="latin-1").read())
+        if uses_lib and board_lib:
+            rows.append({"name": n, "class": "SKIPPED", "note": "the board has a library of its own; LIBRARY LOAD would replace it"})
+            print(json.dumps(rows[-1]), flush=True)
+            continue
         b.attention()
         if gdir[1:2] == ":":
             b.cmd('DRIVE "%s"' % gdir[:2], 10)
@@ -192,6 +211,9 @@ def main():
         s1, o1, t1 = run_program(b, inputs)
         b.attention()
         s2, o2, t2 = run_program(b, inputs)
+        if uses_lib:
+            b.attention()
+            b.cmd("LIBRARY DELETE", 30)
         open(os.path.join(outdir, n + ".out"), "w", encoding="utf-8").write(o1)
         open(os.path.join(outdir, n + ".out2"), "w", encoding="utf-8").write(o2)
         det = norm(o1, inputs) == norm(o2, inputs)
