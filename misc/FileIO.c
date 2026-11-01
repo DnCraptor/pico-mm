@@ -6820,14 +6820,16 @@ static int MIPS16 FilesEntry(fentry *fe, char *ts, char *outbuff, int *ListCnt)
         strcpy(outbuff, ts);
         strcat(outbuff, "  ");
     }
-    strcat(outbuff, fe->fn + 1);
-    char *pp = outbuff;
-    while (*pp)
-    {
-        if (!ConsoleRedirect && MMCharPos >= Option.Width) // a line sent to #n is not wrapped
-            ListNewLine(ListCnt, 1);
-        MMputchar(*pp++, 0);
-    }
+    // the name is printed from the record, not appended to outbuff: littlefs allows 255 characters, more than fit after
+    // the date and size
+    char *part[2] = {outbuff, fe->fn + 1};
+    for (int k = 0; k < 2; k++)
+        for (char *pp = part[k]; *pp; pp++)
+        {
+            if (!ConsoleRedirect && MMCharPos >= Option.Width) // a line sent to #n is not wrapped
+                ListNewLine(ListCnt, 1);
+            MMputchar(*pp, 0);
+        }
 #ifndef USBKEYBOARD
     // fflush(stdout);
     tud_cdc_write_flush();
