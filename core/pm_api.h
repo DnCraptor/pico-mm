@@ -22,6 +22,11 @@ void pm_pin_mode(int gp, int mode);
 void pm_pin_write(int gp, int value);
 int pm_pin_read(int gp);
 
+/* Resident flash-library CSUB service: not part of a RUN allocation scope. */
+void pm_resident_service(void);
+void pm_resident_unwind(void);
+void pm_resident_before_library_write(void);
+
 /* Invoke a firmware service within the active C program's error boundary.
  * Passing NULL performs the abort/poll check only. */
 void pm_core_call(void (*fn)(void *), void *arg);

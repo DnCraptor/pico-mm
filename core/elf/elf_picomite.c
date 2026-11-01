@@ -70,11 +70,11 @@ static unsigned char *elf_read_file(const char *path, int *length, char *err) {
     unsigned char *bytes;
     unsigned int got = 0;
     if (size <= 0) {
-        snprintf(err, MAXERRMSG, "ELF: file missing or empty: %.72s", path);
+        snprintf(err, MAXERRMSG, "ELF: file missing or empty: %.35s", path);
         return NULL;
     }
     if (size > (int)ELF_MAX_OBJECT) {
-        snprintf(err, MAXERRMSG, "ELF: object too large: %.72s", path);
+        snprintf(err, MAXERRMSG, "ELF: object too large: %.40s", path);
         return NULL;
     }
     fnbr = FindFreeFileNbr();

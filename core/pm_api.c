@@ -9,6 +9,125 @@
 #include "pico/time.h"
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+
+/* Resident code is fixed in flash LIBRARY. Its data must survive InitHeap(),
+ * which clears the BASIC heap on RUN/END. The descriptor is allocated from
+ * the separate newlib heap only when a resident is installed; no resident
+ * state is reserved in SRAM by the linker. No resident IRQ/DMA ownership. */
+typedef void (*pm_resident_callback)(void *);
+typedef struct {
+    uint32_t words[16];
+    uint64_t next_us;
+    pm_resident_callback fn;
+    uint32_t period_us;
+    bool busy;
+} pm_resident_descriptor;
+/* M2P2HDMI has no slack in the main RAM linker region. The single pointer
+ * resides in the otherwise unused 4 KB SCRATCH_X bank on RP2350. */
+#ifdef rp2350
+static pm_resident_descriptor *pm_resident
+    __attribute__((section(".scratch_x.pm_resident")));
+#else
+static pm_resident_descriptor *pm_resident;
+#endif
+extern const uint8_t *flash_libmemory;
+extern unsigned char *LibMemory;
+extern unsigned char *CFunctionLibrary;
+
+/* Accept only Thumb code within a CSUB's binary record in flash LIBRARY.
+ * The current BASIC program and RAM LIBRARY can be replaced at the next RUN. */
+static bool pm_resident_is_flash_csub(const void *fn)
+{
+    uintptr_t ptr = (uintptr_t)fn;
+    uintptr_t base = (uintptr_t)flash_libmemory;
+    uintptr_t end = base + MAX_PROG_SIZE;
+    const uint32_t *record = (const uint32_t *)CFunctionLibrary;
+    if (!(ptr & 1u) || LibMemory != flash_libmemory || !record ||
+        Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE)
+        return false;
+    ptr &= ~(uintptr_t)1u;
+    if (ptr < base || ptr >= end) return false;
+    while ((uintptr_t)record >= base && (uintptr_t)record < end &&
+           end - (uintptr_t)record >= 8u) {
+        uintptr_t body = (uintptr_t)record + 8u;
+        uint32_t count = record[1];
+        if (record[0] == 0xffffffffu) break;
+        if ((count & 3u) || count == 0u || count > end - body) break;
+        if (!(record[0] & 0x80000000u) && ptr >= body && ptr < body + count)
+            return true;
+        record = (const uint32_t *)(body + count);
+    }
+    return false;
+}
+
+int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if ((r && r->busy) || pm_runtime_is_running() ||
+        interval_ms < 10u || interval_ms > 60000u ||
+        !pm_resident_is_flash_csub((const void *)fn))
+        return -1;
+    if (!r) {
+        r = malloc(sizeof(*r));
+        if (!r) return -1;
+        pm_resident = r;
+    }
+    memset(r, 0, sizeof(*r));
+    r->period_us = interval_ms * 1000u;
+    r->next_us = time_us_64() + r->period_us;
+    r->fn = fn;
+    return 0;
+}
+void pm_resident_stop(void)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r) return;
+    r->fn = NULL;
+    /* The callback may unregister itself. Its state remains valid until
+     * it returns, then pm_resident_service() releases the descriptor. */
+    if (r->busy) return;
+    pm_resident = NULL;
+    free(r);
+}
+int pm_resident_active(void)
+{
+    return pm_resident && pm_resident->fn != NULL;
+}
+uint32_t *pm_resident_state(void)
+{
+    return pm_resident ? pm_resident->words : NULL;
+}
+
+/* Called from routinechecks() on the foreground core, never the 1 ms IRQ. */
+void pm_resident_service(void)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || r->busy || pm_runtime_is_running() || MMAbort)
+        return;
+    uint64_t now = time_us_64();
+    if (now < r->next_us) return;
+    r->next_us = now + r->period_us;
+    r->busy = true;
+    r->fn(r->words);
+    r->busy = false;
+    if (!r->fn) pm_resident_stop();
+}
+/* A callback error can longjmp over pm_resident_service's last statement. */
+void pm_resident_unwind(void)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (r && r->busy) {
+        r->busy = false;
+        pm_resident_stop();
+    }
+}
+void pm_resident_before_library_write(void)
+{
+    if (pm_resident && pm_resident->busy)
+        error("Cannot overwrite LIBRARY in resident callback");
+    pm_resident_stop(); /* free BEFORE flash erase invalidates the code */
+}
 
 /* RP2350 keeps the existing PM_CALL error/abort boundary in the C runtime.
  * RP2040's ELF runner uses the BASIC prompt's error boundary and performs
@@ -317,6 +436,10 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_vres)
     PM_CORE_SYM(pm_timer_us)
     PM_CORE_SYM(pm_abort_requested)
+    PM_CORE_SYM(pm_resident_start)
+    PM_CORE_SYM(pm_resident_stop)
+    PM_CORE_SYM(pm_resident_active)
+    PM_CORE_SYM(pm_resident_state)
     PM_CORE_SYM(pm_cls)
     PM_CORE_SYM(pm_pixel)
     {"pm_line", (const void *)&pm_core_line},

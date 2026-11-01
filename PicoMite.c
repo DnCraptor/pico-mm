@@ -79,6 +79,7 @@ extern "C"
 #endif
 #endif
 #include "core/elf/elf_picomite.h"
+#include "core/pm_api.h"
 #ifndef rp2350
 #include "hardware/structs/ssi.h"
 #include "hardware/vreg.h"
@@ -922,6 +923,7 @@ uint8_t PSRAMpin;
         if (timenow - lastrun < 100)
             return;
         lastrun = timenow;
+        pm_resident_service();
 #if defined(PICOMITEVGA) || defined(GUICONTROLS)
         /* Mouse / virtual-cursor refresh. routinechecks() runs from the
            prompt's getchar loop as well as during program execution, so
@@ -4520,6 +4522,7 @@ uint32_t testPSRAM(void)
         {
             // we got here via a long jump which means an error or CTRL-C or the program wants to exit to the command prompt
             ConsoleRedirect = 0; // LIST ALL #n etc cut short: the prompt is the console's (SerialPutchar's Ctrl-C jumps here directly)
+            pm_resident_unwind(); // a resident callback may have longjmp'd here
 #ifdef rp2350
             tcc_picomite_abandoned(); // a C program (RUN "x.c", TCC) left past its cleanup: free its memory
 #endif

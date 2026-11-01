@@ -44,6 +44,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hardware/watchdog.h"
 #include "hardware/pll.h"
 #include "hardware/clocks.h"
+#include "core/pm_api.h"
 #include "hardware/structs/pll.h"
 #include "hardware/structs/clocks.h"
 #include "sys/stat.h"
@@ -8422,6 +8423,7 @@ void BuildDefaultOptions(struct option_s *dst)
 
 void ResetAllFlash(void)
 {
+    pm_resident_before_library_write();
     ResetOptions(true);
     ClearSavedVars();
     disable_interrupts_pico();
@@ -8440,6 +8442,8 @@ void ResetAllFlash(void)
 }
 void FlashWriteInit(int region)
 {
+    if (region == LIBRARY_FLASH || region == MAXFLASHSLOTS)
+        pm_resident_before_library_write();
     for (int i = 0; i < 64; i++)
         MemWord.i32[i] = 0xFFFFFFFF;
     mi8p = 0;
