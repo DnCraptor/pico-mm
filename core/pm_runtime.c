@@ -16,7 +16,7 @@
 #include <setjmp.h>
 #include "pico/time.h"
 
-#define PM_RUNTIME_VERSION 20u
+#define PM_RUNTIME_VERSION 21u
 
 typedef union pm_runtime_block {
     struct {
@@ -63,6 +63,8 @@ void pm_runtime_periph_begin(void);
 void pm_runtime_periph_end(void);
 void pm_pio_runtime_begin(void);
 void pm_pio_runtime_end(void);
+void pm_gpio_runtime_begin(void);
+void pm_gpio_runtime_end(void);
 void pm_pio_runtime_before_free(const void *allocation, size_t size);
 const void *pm_runtime_basic_resolve(const char *name);
 unsigned pm_runtime_basic_firmware_id(void);
@@ -81,6 +83,7 @@ void pm_runtime_begin(void)
     pm_runtime_tick_reset();
     pm_runtime_periph_begin();
     pm_pio_runtime_begin();
+    pm_gpio_runtime_begin();
 }
 
 void pm_runtime_end(void)
@@ -91,6 +94,7 @@ void pm_runtime_end(void)
     PCMRunCleanup();
     pm_runtime_files_end();
     pm_pio_runtime_end();
+    pm_gpio_runtime_end();
     pm_runtime_periph_end();
     pm_runtime_tick_reset();
     b = pm_runtime_blocks;
@@ -252,6 +256,7 @@ bool pm_runtime_csub_forbidden(const char *name)
         "rewind", "feof", "ferror", "fflush", "fgetc", "getc",
         "getchar", "fgets", "fputc", "putc", "fputs",
         "__tcc_pm_stdin", "pm_settick",
+        "pm_gpio_on_edge", "pm_gpio_poll",
         "pm_adc_read", "pm_adc_read_raw", "pm_pwm_open",
         "pm_pwm_set_duty", "pm_pwm_set_frequency", "pm_pwm_close",
         "pm_serial_open", "pm_serial_read", "pm_serial_write",

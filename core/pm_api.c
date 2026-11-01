@@ -82,6 +82,19 @@ static void pm_pin_read_do(void *p)
 int pm_pin_read(int gp)
 { int a[] = {gp, 0}; pm_core_call(pm_pin_read_do, a); return a[1]; }
 
+extern void pm_gpio_subscribe_hw(int,int,int,void (*)(int,int));
+static void pm_gpio_on_do(void *p)
+{
+    struct {int gp,edge,pull;void (*fn)(int,int);} *a=p;
+    pm_gpio_subscribe_hw(a->gp,a->edge,a->pull,a->fn);
+}
+void pm_gpio_on_edge(int gp,int edge,int pull,void (*fn)(int,int))
+{
+    struct {int gp,edge,pull;void (*fn)(int,int);} a={gp,edge,pull,fn};
+    pm_core_call(pm_gpio_on_do,&a);
+}
+void pm_gpio_poll(void) { pm_core_call(NULL,NULL); }
+
 /* Compiler-independent native functions; local declarations avoid clashing
  * with the legacy static TinyCC adapter implementations during migration. */
 extern void pm_print(const char *);
@@ -134,6 +147,8 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_pin_mode)
     PM_CORE_SYM(pm_pin_write)
     PM_CORE_SYM(pm_pin_read)
+    PM_CORE_SYM(pm_gpio_on_edge)
+    PM_CORE_SYM(pm_gpio_poll)
     PM_CORE_SYM(pm_print)
     PM_CORE_SYM(pm_yield)
     PM_CORE_SYM(pm_delay_us)

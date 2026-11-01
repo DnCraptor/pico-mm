@@ -668,6 +668,40 @@ here applies to the expanded RP2350 runtime.
 | 18 | `pio.h`: finite RX DMA with power-of-two destination window (`pm_pio_dma_rx_ring`), shared with BASIC |
 | 19 | `pio.h`: BASIC-shared PIO(FSTAT), PIO(FDEBUG) and RP2350 PIO(READFIFO) hardware accessors |
 | 20 | `pio.h`: `pm_pio_assemble(pio,line)` C wrapper for the BASIC PIO assembler (directives, labels and instruction parsing) |
+| 21 | `input.h`: C GPIO edge subscriptions through BASIC's `inttbl[]`, `IntPinArm/Disarm` and delayed event scan |
+
+GPIO edge subscriptions (API v21):
+
+```c
+#include <picomite/input.h>
+#include <stddef.h>
+static volatile unsigned hits;
+static void edge(int gp,int level) { (void)gp; (void)level; ++hits; }
+/* On a free GPIO input (GP10 here): */
+pm_gpio_on_edge(10, PM_GPIO_BOTH, PM_GPIO_PULLUP, edge);
+/* Work; C API calls also poll events. Explicitly: */
+pm_gpio_poll();
+pm_gpio_on_edge(10, 0, 0, NULL);
+```
+
+The GPIO number is `GP` (not PicoMite's physical header-pin number).
+Modes are RISE, FALL, BOTH; pull is NOPULL, PULLUP or PULLDOWN.
+A NULL callback cancels only a C-owned subscription on that pin. The
+registration requires an otherwise unconfigured GPIO capable of digital
+input. It uses one of the same ten `inttbl[]` slots as BASIC `SETPIN`; a
+BASIC-owned pin or callback cannot be overwritten. Reconfiguring a pin
+cancels its C subscription. All C-owned subscriptions are released on
+C RUN exit, before the program image is freed; the pin becomes unconfigured.
+Callbacks execute synchronously at C API calls or `pm_gpio_poll()`, never
+inside a hardware IRQ. As with BASIC SETPIN, the hardware edge latch wakes
+a level comparison, not a lossless pulse counter; brief transitions can be
+coalesced. Do not call this RUN-only API from CSUB. The C callback may
+unregister its own pin. When no edge occurs, polling returns immediately. `C/pm_gpio_edge_test.c`
+by default drives M2's NES-PAD CLK (GP20) and LATCH (GP21), observing DATA
+(GP26). All three pins must be unconfigured in PicoMite. Hold one NES button
+(preferably A) during the test to produce both data edges. An optional GPIO
+argument selects the earlier manual input test. Unavailable pins and missing
+transitions produce SKIP instead of PASS.
 
 PIO/DMA notes for API v20:
 

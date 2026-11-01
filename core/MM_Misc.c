@@ -10570,6 +10570,96 @@ void IntPinsClear(void)
     IntPinList();
 }
 
+/* C subscriptions share BASIC's inttbl[] and the INTR edge latches. */
+static uint16_t pm_c_gpio_slots;
+static bool pm_c_gpio_polling;
+extern bool pm_runtime_is_running(void);
+void pm_gpio_drop_slot_hw(int i)
+{
+    if (i >= 0 && i < NBRINTERRUPTS)
+        pm_c_gpio_slots &= ~(1u << i);
+}
+void pm_gpio_runtime_begin(void)
+{
+    pm_c_gpio_slots = 0;
+    pm_c_gpio_polling = false;
+}
+void pm_gpio_runtime_end(void)
+{
+    for (int i = 0; i < NBRINTERRUPTS; ++i)
+        if (pm_c_gpio_slots & (1u << i)) {
+            int pin = inttbl[i].pin;
+            pm_c_gpio_slots &= ~(1u << i);
+            if (pin) ExtCfg(pin, EXT_NOT_CONFIG, 0);
+        }
+    pm_c_gpio_polling = false;
+}
+void pm_gpio_subscribe_hw(int gp, int edge, int pull, void (*cb)(int,int))
+{
+    int pin = codemap(gp), slot = -1, cfg, opt;
+    if (!pm_runtime_is_running()) error("GPIO events require a running C program");
+    if (IsInvalidPin(pin)) error("Invalid GPIO pin");
+    for (int i = 0; i < NBRINTERRUPTS; ++i)
+        if ((pm_c_gpio_slots & (1u << i)) && inttbl[i].pin == pin) {
+            slot = i;
+            break;
+        }
+    if (!cb) {
+        if (slot >= 0) ExtCfg(pin, EXT_NOT_CONFIG, 0);
+        return;
+    }
+    if (edge < 1 || edge > 3 || pull < 0 || pull > 2)
+        error("Invalid GPIO event mode");
+    if (ExtCurrentConfig[pin] != EXT_NOT_CONFIG && slot < 0)
+        error("GPIO pin already configured");
+    CheckPin(pin, CP_IGNORE_INUSE);
+    if (!(PinDef[pin].mode & DIGITAL_IN)) StandardError(8);
+    if (slot < 0) {
+        for (slot = 0; slot < NBRINTERRUPTS; ++slot)
+            if (!inttbl[slot].pin) break;
+        if (slot == NBRINTERRUPTS) error("Too many interrupts");
+    }
+    cfg = edge == 1 ? EXT_INT_HI : edge == 2 ? EXT_INT_LO : EXT_INT_BOTH;
+    opt = pull == 1 ? CNPUSET : pull == 2 ? CNPDSET : 0;
+#ifdef rp2350
+    if (pull == 2) {
+        PinSetBit(pin, TRISCLR);
+        PinSetBit(pin, LATCLR);
+        PinSetBit(pin, TRISSET);
+    }
+#endif
+    ExtCfg(pin, cfg, opt);
+    inttbl[slot].pin = pin;
+    inttbl[slot].intp = (char *)(uintptr_t)cb;
+    inttbl[slot].lohi = edge == 1 ? T_LOHI : edge == 2 ? T_HILO : T_BOTH;
+    IntPinArm(pin);
+    inttbl[slot].last = ExtInp(pin);
+    pm_c_gpio_slots |= 1u << slot;
+}
+void pm_gpio_runtime_poll(void)
+{
+    if (!pm_runtime_is_running() || pm_c_gpio_polling || !pm_c_gpio_slots) return;
+    pm_c_gpio_polling = true;
+    for (int i = 0; i < NBRINTERRUPTS; ++i) {
+        if (!(pm_c_gpio_slots & (1u << i))) continue;
+        int pin = inttbl[i].pin;
+        if (!pin) { pm_c_gpio_slots &= ~(1u << i); continue; }
+        int gp = PinDef[pin].GPno;
+        uint32_t e = io_bank0_hw->intr[gp >> 3] & INTPIN_EDGES(gp);
+        if (!e) continue;
+        io_bank0_hw->intr[gp >> 3] = e;
+        int level = ExtInp(pin), last = inttbl[i].last;
+        inttbl[i].last = level;
+        if ((inttbl[i].lohi == T_HILO && level < last) ||
+            (inttbl[i].lohi == T_LOHI && level > last) ||
+            (inttbl[i].lohi == T_BOTH && level != last)) {
+            void (*cb)(int,int) = (void (*)(int,int))(uintptr_t)inttbl[i].intp;
+            if (cb) cb(gp, level);
+        }
+    }
+    pm_c_gpio_polling = false;
+}
+
 // has an armed interrupt pin latched an edge?
 static __force_inline int IntPinEdge(void) // inlined: check_interrupt() runs from RAM
 {
@@ -10871,15 +10961,20 @@ int checkdetailinterrupts(void)
     }
 
     for (i = 0; i < IntPinRegs; i++)
-    { // take the pins' latched edges: the loop below compares levels, and any later edge latches again
+    { // take BASIC's latched edges, leaving C-owned pins for the C poller
         int r = IntPinReg[i];
         uint32_t e = io_bank0_hw->intr[r] & IntPinMask[r];
+        if (e && pm_c_gpio_slots)
+            for (int j = 0; j < NBRINTERRUPTS; ++j)
+                if ((pm_c_gpio_slots & (1u << j)) && inttbl[j].pin &&
+                    (PinDef[inttbl[j].pin].GPno >> 3) == r)
+                    e &= ~INTPIN_EDGES(PinDef[inttbl[j].pin].GPno);
         if (e)
             io_bank0_hw->intr[r] = e;
     }
     for (i = 0; i < NBRINTERRUPTS; i++)
     { // scan through the interrupt table
-        if (inttbl[i].pin != 0)
+        if (inttbl[i].pin != 0 && !(pm_c_gpio_slots & (1u << i)))
         {                              // if this entry has an interrupt pin set
             v = ExtInp(inttbl[i].pin); // get the current value of the pin
             // check if interrupt occured

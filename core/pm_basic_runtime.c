@@ -372,10 +372,12 @@ void pm_runtime_tick_reset(void)
     pm_runtime_try_clear();
 }
 void pm_pio_runtime_poll(void);
+void pm_gpio_runtime_poll(void);
 void pm_runtime_tick_service(void)
 {
     unsigned i;
     uint64_t now;
+    pm_gpio_runtime_poll();
     pm_pio_runtime_poll();
     if (!pm_runtime_is_running() || !pm_basic_ticks_active || pm_basic_in_tick) return;
     now = time_us_64();

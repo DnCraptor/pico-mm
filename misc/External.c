@@ -827,6 +827,8 @@ void MIPS16 ExtCfg(int pin, int cfg, int option)
     for (i = 0; i < NBRINTERRUPTS; i++)
         if (inttbl[i].pin == pin)
         {
+            extern void pm_gpio_drop_slot_hw(int);
+            pm_gpio_drop_slot_hw(i);
             inttbl[i].pin = 0; // start off by disable a software interrupt (if set) on this pin
             IntPinDisarm(pin);
         }
