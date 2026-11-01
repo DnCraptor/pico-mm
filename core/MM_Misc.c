@@ -2531,13 +2531,15 @@ void MIPS16 cmd_library(void)
     /********************************************************************************************************************
     ******* LIBRARY LIST **********************************************************************************************/
 
-    if (checkstring(cmdline, (unsigned char *)"LIST ALL"))
+    if ((tp = checkstring(cmdline, (unsigned char *)"LIST ALL")))
     {
         if (CurrentLinePtr)
             StandardError(10);
-        if (!LibPresent())
-            return;
-        ListProgram(LibMemory, true);
+        tp = OutputRedirect(tp); // LIBRARY LIST ALL #n
+        checkend(tp);
+        if (LibPresent())
+            ListProgram(LibMemory, true);
+        ConsoleRedirect = 0;
         return;
     }
     if (checkstring(cmdline, (unsigned char *)"LIST"))
@@ -7583,7 +7585,10 @@ void MIPS16 cmd_option(void)
     tp = checkstring(cmdline, (unsigned char *)"LIST");
     if (tp)
     {
+        tp = OutputRedirect(tp); // OPTION LIST #n
+        checkend(tp);
         printoptions();
+        ConsoleRedirect = 0;
         return;
     }
     tp = checkstring(cmdline, (unsigned char *)"AUDIO");
@@ -8366,6 +8371,43 @@ void MIPS16 cmd_keyboard(void)
     error("Syntax");
 }
 #endif
+
+/* MM.INFO(PIN n)'s text for physical pin n, into s (C string); LIST PINS prints the same */
+void PinStatusText(int pin, char *s)
+{
+#ifdef HDMI
+    if (pin >= 16 && pin <= 25)
+    {
+        strcpy(s, "Boot Reserved : HDMI");
+        return;
+    }
+#endif
+#if (defined(PICOMITEWEB) || defined(PICOMITEBT) || defined(PICOMITEBTH) || defined(PICOMITEHDMIBTH)) && !CYW43_PIN_WL_DYNAMIC
+    /* Same widening as MM.INFO(PINNO) — CYW43 pins are reserved on every cyw43-bearing variant. */
+    if (pin >= 41 && pin <= 44)
+    {
+        strcpy(s, "Boot Reserved : CYW43");
+        return;
+    }
+#endif
+    if (IsInvalidPin(pin))
+    {
+        strcpy(s, "Invalid");
+    }
+    else
+    {
+        strcpy(s, PinFunction[ExtCurrentConfig[pin] & 0xFF]);
+        if (ExtCurrentConfig[pin] & EXT_BOOT_RESERVED)
+        {
+            strcpy(s, "Boot Reserved : ");
+            strcat(s, pinsearch(pin));
+        }
+        if (ExtCurrentConfig[pin] & EXT_COM_RESERVED)
+            strcat(s, ": Reserved for function");
+        if (ExtCurrentConfig[pin] & EXT_DS18B20_RESERVED)
+            strcat(s, ": In use for DS18B20");
+    }
+}
 
 void MIPS16 fun_info(void)
 {
@@ -9396,43 +9438,7 @@ void MIPS16 fun_info(void)
                 }
                 OptionErrorSkip = saved;
             }
-#ifdef HDMI
-            if (pin >= 16 && pin <= 25)
-            {
-                strcpy((char *)sret, "Boot Reserved : HDMI");
-                CtoM(sret);
-                targ = T_STR;
-                return;
-            }
-#endif
-#if (defined(PICOMITEWEB) || defined(PICOMITEBT) || defined(PICOMITEBTH) || defined(PICOMITEHDMIBTH)) && !CYW43_PIN_WL_DYNAMIC
-            /* Same widening as the iret block above — CYW43 pins are
-               reserved on every cyw43-bearing variant. */
-            if (pin >= 41 && pin <= 44)
-            {
-                strcpy((char *)sret, "Boot Reserved : CYW43");
-                CtoM(sret);
-                targ = T_STR;
-                return;
-            }
-#endif
-            if (IsInvalidPin(pin))
-            {
-                strcpy((char *)sret, "Invalid");
-            }
-            else
-            {
-                strcpy((char *)sret, PinFunction[ExtCurrentConfig[pin] & 0xFF]);
-                if (ExtCurrentConfig[pin] & EXT_BOOT_RESERVED)
-                {
-                    strcpy((char *)sret, "Boot Reserved : ");
-                    strcat((char *)sret, pinsearch(pin));
-                }
-                if (ExtCurrentConfig[pin] & EXT_COM_RESERVED)
-                    strcat((char *)sret, ": Reserved for function");
-                if (ExtCurrentConfig[pin] & EXT_DS18B20_RESERVED)
-                    strcat((char *)sret, ": In use for DS18B20");
-            }
+            PinStatusText(pin, (char *)sret);
             CtoM(sret);
             targ = T_STR;
             return;

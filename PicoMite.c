@@ -1311,8 +1311,20 @@ uint8_t PSRAMpin;
         return n;
     }
 #endif
+    /* LIST ALL #n, OPTION LIST #n ...: while one of these runs, everything it prints goes to file or COM port n, as
+       PRINT #n does, instead of the console. 0 = the console. Cleared when the command ends, and by error() and
+       do_end() so an error message or a Ctrl-C never follows it out. */
+    volatile int ConsoleRedirect = 0;
+    int ConsoleRedirectDepth = 0; // the ExecDepth the command ran at (see error())
     void __not_in_flash_func(putConsole)(int c, int flush)
     {
+#ifndef PICOMITEMIN
+        if (ConsoleRedirect)
+        {
+            MMfputc((unsigned char)c, ConsoleRedirect);
+            return;
+        }
+#endif
         if (OptionConsole & 2)
             DisplayPutC(c);
         if (OptionConsole & 1)
@@ -1386,6 +1398,10 @@ uint8_t PSRAMpin;
     char MMputchar(char c, int flush)
     {
         putConsole(c, flush);
+#ifndef PICOMITEMIN
+        if (ConsoleRedirect)
+            return c; // output sent to #n leaves the console's column alone (and a listing unwrapped)
+#endif
         if (isprint(c))
             MMCharPos++;
         if (c == '\r')
@@ -4479,6 +4495,7 @@ uint32_t testPSRAM(void)
         if (setjmp(mark) != 0)
         {
             // we got here via a long jump which means an error or CTRL-C or the program wants to exit to the command prompt
+            ConsoleRedirect = 0; // LIST ALL #n etc cut short: the prompt is the console's (SerialPutchar's Ctrl-C jumps here directly)
             FlashLoad = 0;
             ExecDepth = 0; // (see ExecuteProgram)
             OptionErrorSkip = 0; // the prompt has no ON ERROR of the program's (issue 35)

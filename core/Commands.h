@@ -125,6 +125,9 @@ extern const unsigned int CaseOption;
 extern volatile bool Keycomplete;
 extern char *KeyInterrupt;
 extern int keyselect;
+extern volatile int ConsoleRedirect;                // PicoMite.c: a command's output goes to #n (0 = the console)
+extern int ConsoleRedirectDepth;                    // and the ExecDepth that command runs at
+extern unsigned char *OutputRedirect(unsigned char *p); // reads LIST ALL's etc. "#n," and arms ConsoleRedirect
 extern uint64_t g_flag;
 #define TRACE_BUFF_SIZE 128
 
