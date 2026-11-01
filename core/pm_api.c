@@ -16,11 +16,16 @@
  * the separate newlib heap only when a resident is installed; no resident
  * state is reserved in SRAM by the linker. No resident IRQ/DMA ownership. */
 typedef void (*pm_resident_callback)(void *);
+typedef void (*pm_resident_gpio_callback)(int, unsigned, void *);
 typedef struct {
     uint32_t words[16];
     uint64_t next_us;
     pm_resident_callback fn;
+    pm_resident_gpio_callback gpio_fn;
     uint32_t period_us;
+    int gpio_pin;  /* PicoMite pin number; zero means no subscription. */
+    int gpio_gp;   /* Physical GPIO number passed to the C callback. */
+    unsigned gpio_edges; /* PM_GPIO_RISE / PM_GPIO_FALL mask. */
     bool busy;
 } pm_resident_descriptor;
 /* M2P2HDMI has no slack in the main RAM linker region. The single pointer
@@ -61,6 +66,80 @@ static bool pm_resident_is_flash_csub(const void *fn)
     return false;
 }
 
+/* As for BASIC SETPIN INTH/INTL/INTB, use the IO bank's *raw* edge
+ * latches. Do not install another IO_IRQ_BANK0 handler: PicoMite already
+ * owns that interrupt for IR, PS/2, counters and other devices. */
+#define PM_RESIDENT_GPIO_EDGE_BITS 0xCu
+static uint32_t pm_resident_gpio_raw_mask(int gp)
+{
+    return PM_RESIDENT_GPIO_EDGE_BITS << (4u * ((unsigned)gp & 7u));
+}
+
+/* Called before the descriptor is reused/freed. Clearing ownership first
+ * allows ExtCfg() to perform the normal PicoMite pin cleanup. */
+static void pm_resident_gpio_release(pm_resident_descriptor *r)
+{
+    int pin = r->gpio_pin;
+    if (!pin) return;
+    r->gpio_fn = NULL;
+    r->gpio_pin = 0;
+    r->gpio_edges = 0;
+    io_bank0_hw->intr[r->gpio_gp >> 3] = pm_resident_gpio_raw_mask(r->gpio_gp);
+    ExtCfg(pin, EXT_NOT_CONFIG, 0);
+}
+
+int pm_resident_gpio_pin_owned(int pin)
+{
+    return pm_resident && pm_resident->fn && pm_resident->gpio_pin == pin;
+}
+
+int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
+                              pm_resident_gpio_callback callback)
+{
+    pm_resident_descriptor *r = pm_resident;
+    int pin, cfg, option;
+    if (!r || !r->fn || r->busy || pm_runtime_is_running() || !callback ||
+        edges < PM_GPIO_RISE || edges > PM_GPIO_BOTH ||
+        pull < PM_GPIO_NOPULL || pull > PM_GPIO_PULLDOWN ||
+        !pm_resident_is_flash_csub((const void *)callback)) return -1;
+    /* codemap() reports errors, so reject out-of-range numbers first. */
+    if (gp < 0 || gp >= NUM_BANK0_GPIOS) return -1;
+#ifdef rp2350
+    if (rp2350a && gp > 29) return -1;
+#endif
+    pin = codemap(gp);
+    if (IsInvalidPin(pin) || !(PinDef[pin].mode & DIGITAL_IN)) return -1;
+    if (pin != r->gpio_pin &&
+        (ExtCurrentConfig[pin] != EXT_NOT_CONFIG ||
+         !CheckPin(pin, CP_NOABORT))) return -1;
+    /* Permit reconfiguration of the same owned pin, but only one resident
+     * subscription at a time. Other pins are never modified on failure. */
+    if (r->gpio_pin) pm_resident_gpio_release(r);
+    cfg = edges == PM_GPIO_RISE ? EXT_INT_HI :
+          edges == PM_GPIO_FALL ? EXT_INT_LO : EXT_INT_BOTH;
+    option = pull == PM_GPIO_PULLUP ? CNPUSET :
+             pull == PM_GPIO_PULLDOWN ? CNPDSET : 0;
+#ifdef rp2350
+    if (pull == PM_GPIO_PULLDOWN) {
+        PinSetBit(pin, TRISCLR);
+        PinSetBit(pin, LATCLR);
+        PinSetBit(pin, TRISSET);
+    }
+#endif
+    ExtCfg(pin, cfg, option);
+    io_bank0_hw->intr[gp >> 3] = pm_resident_gpio_raw_mask(gp);
+    r->gpio_gp = gp;
+    r->gpio_edges = edges;
+    r->gpio_fn = callback;
+    r->gpio_pin = pin;
+    return 0;
+}
+
+void pm_resident_gpio_off(void)
+{
+    if (pm_resident) pm_resident_gpio_release(pm_resident);
+}
+
 int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
 {
     pm_resident_descriptor *r = pm_resident;
@@ -72,6 +151,8 @@ int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
         r = malloc(sizeof(*r));
         if (!r) return -1;
         pm_resident = r;
+    } else {
+        pm_resident_gpio_release(r); /* Restart must not leak old pin. */
     }
     memset(r, 0, sizeof(*r));
     r->period_us = interval_ms * 1000u;
@@ -87,6 +168,7 @@ void pm_resident_stop(void)
     /* The callback may unregister itself. Its state remains valid until
      * it returns, then pm_resident_service() releases the descriptor. */
     if (r->busy) return;
+    pm_resident_gpio_release(r);
     pm_resident = NULL;
     free(r);
 }
@@ -105,6 +187,28 @@ void pm_resident_service(void)
     pm_resident_descriptor *r = pm_resident;
     if (!r || !r->fn || r->busy || pm_runtime_is_running() || MMAbort)
         return;
+    if (r->gpio_pin && r->gpio_fn) {
+        const int gp = r->gpio_gp;
+        const unsigned shift = 4u * ((unsigned)gp & 7u);
+        uint32_t raw = io_bank0_hw->intr[gp >> 3] &
+                       pm_resident_gpio_raw_mask(gp);
+        if (raw) {
+            unsigned events = 0;
+            io_bank0_hw->intr[gp >> 3] = raw;
+            if (raw & ((uint32_t)GPIO_IRQ_EDGE_RISE << shift))
+                events |= PM_GPIO_RISE;
+            if (raw & ((uint32_t)GPIO_IRQ_EDGE_FALL << shift))
+                events |= PM_GPIO_FALL;
+            events &= r->gpio_edges;
+            if (events) {
+                pm_resident_gpio_callback cb = r->gpio_fn;
+                r->busy = true;
+                cb(gp, events, r->words);
+                r->busy = false;
+                if (!r->fn) { pm_resident_stop(); return; }
+            }
+        }
+    }
     uint64_t now = time_us_64();
     if (now < r->next_us) return;
     r->next_us = now + r->period_us;
@@ -440,6 +544,8 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_resident_stop)
     PM_CORE_SYM(pm_resident_active)
     PM_CORE_SYM(pm_resident_state)
+    PM_CORE_SYM(pm_resident_gpio_on_edge)
+    PM_CORE_SYM(pm_resident_gpio_off)
     PM_CORE_SYM(pm_cls)
     PM_CORE_SYM(pm_pixel)
     {"pm_line", (const void *)&pm_core_line},

@@ -26,6 +26,8 @@ int pm_pin_read(int gp);
 void pm_resident_service(void);
 void pm_resident_unwind(void);
 void pm_resident_before_library_write(void);
+/* Exclusive GPIO reservation, checked by CheckPin() and ClearExternalIO(). */
+int pm_resident_gpio_pin_owned(int pin);
 
 /* Invoke a firmware service within the active C program's error boundary.
  * Passing NULL performs the abort/poll check only. */

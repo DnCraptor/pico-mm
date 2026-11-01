@@ -33,6 +33,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * The following section will be excluded from the documentation.
  */
 #include "Hardware_Includes.h"
+#include "core/pm_api.h"
 #include "hardware/watchdog.h"
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
@@ -2285,6 +2286,16 @@ int CheckPin(int pin, int action)
     {
         if (!(action & CP_NOABORT))
             error("Pin %/| is invalid", pin, pin);
+        return false;
+    }
+
+    /* Resident GPIO cannot be seized by BASIC/other C users. The reset
+     * loop in ClearExternalIO() uses CP_NOABORT, leaving this pin intact
+     * across END and RUN; ordinary configuration attempts report an error. */
+    if (pm_resident_gpio_pin_owned(pin))
+    {
+        if (!(action & CP_NOABORT))
+            error("Pin %/| belongs to resident C", pin, pin);
         return false;
     }
 

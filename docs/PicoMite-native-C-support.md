@@ -658,7 +658,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 24.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 25.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -690,8 +690,9 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 22 | `input.h`: gamepad state snapshots and RUN-scoped C button-change callbacks using BASIC's event latch |
 | 23 | `gui.h`: direct `pm_touch`/`pm_click` state access, `pm_gui` commands, typed `CTRLVAL`, and RUN-scoped GUI callbacks; `PM_CAP_GUI` |
 | 24 | `resident.h`: one cooperative flash-LIBRARY CSUB service surviving BASIC `END`/`RUN`; fixed firmware-owned state and explicit stop; no resident IRQ/DMA ownership yet |
+| 25 | `resident.h`: one resident-owned GPIO input with latched rising/falling-edge callbacks, exclusive pin reservation, automatic release across library replacement |
 
-### Resident CSUB service (API v24, first stage)
+### Resident CSUB service (API v24-v25)
 
 `#include <picomite/resident.h>` provides a **single cooperative service**
 installed by a CSUB in the flash `LIBRARY` (`pm_resident_start(callback, period_ms)`).
@@ -708,8 +709,26 @@ library unregisters it **before** flash is erased. `pm_resident_active()`
 reports whether the service is installed. Registration refuses RUN-loaded
 C/ELF code, RAM-LIBRARY code, reentrant installation and periods outside
 10..60000 ms. The callback must be short and must not call MMBasic, allocate
-memory, use RUN-scoped resources or configure IRQ/DMA. This is **not yet**
-a general resident ELF process or an IRQ/DMA residency API.
+memory or use RUN-scoped resources. This is **not yet** a general resident
+ELF process or an IRQ/DMA residency API.
+
+API v25 permits one **exclusive resident GPIO input**, configured by
+`pm_resident_gpio_on_edge(gp,edges,pull,callback)`. The callback receives
+`(gp,events,state)` with `events` bits 1=rise and 2=fall; use the
+`PM_RESIDENT_GPIO_*` constants in `resident.h`. It must also reside in a flash
+LIBRARY CSUB. It runs only in the main thread via `routinechecks()`: the
+firmware polls the existing raw `IO_BANK0.INTR` edge latches and does not
+install an extra hardware interrupt handler. Both edges can arrive together,
+and several transitions of the same polarity can coalesce into one bit. Events
+can be delayed while native C RUN or long blocking operations execute. This
+is **not** a lossless high-speed edge counter or direct IRQ callback.
+
+The pin is reserved against BASIC `SETPIN`, other C allocations, and
+`ClearExternalIO()` cleanup, so the input and its pull survive `END`/`RUN`.
+`pm_resident_gpio_off()` detaches the GPIO independently of the periodic
+service. Resident stop, replacement, abnormal callback exit, and flash
+LIBRARY erase all release the pin using ordinary PicoMite `ExtCfg()` cleanup.
+No new static SRAM buffer or hardware IRQ vector is allocated.
 
 Build `C/pm_resident_probe.c` as soft-float ARMv6-M ET_REL to
 `B:/pm_resident_probe.elf`, then copy `Bas/pm_resident_probe.bas`,
@@ -763,7 +782,7 @@ are dropped. On C RUN end or `pm_gui_on_event(NULL)` the subscription and
 queue are discarded, without resetting BASIC's GUI controls or interrupt
 vectors. Registration requires an active `.c`/`.elf` RUN with GUICONTROLS;
 it is not available to external CSUBs. GUI creation and CTRLVAL mutation
-are likewise not exported to CSUBs. `PM_API_VERSION` is 24.
+are likewise not exported to CSUBs. `PM_API_VERSION` is 25.
 
 Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
 fill `state.size = sizeof state` first; returns 1 for a supported controller,
