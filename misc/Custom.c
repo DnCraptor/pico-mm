@@ -2454,6 +2454,15 @@ void MIPS16 cmd_pio(void)
 void fun_pio(void)
 {
         unsigned char *tp;
+        tp = checkstring(ep, (unsigned char *)"IDLE");
+        if (tp)
+        {
+                getcsargs(&tp, 1);
+                if (argc != 1) SyntaxError();
+                iret = pm_pio_idle_hw(getinteger(argv[0]));
+                targ = T_INT;
+                return;
+        }
         tp = checkstring(ep, (unsigned char *)"PINCTRL");
         if (tp)
         {

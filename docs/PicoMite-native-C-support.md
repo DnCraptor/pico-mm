@@ -671,6 +671,17 @@ here applies to the expanded RP2350 runtime.
 
 PIO/DMA notes for API v20:
 
+The BASIC function `PIO(IDLE n)` calls the same `pm_pio_idle_hw()` probe as
+native C `pm_pio_idle(n)`. It returns 1 for an available PIO block whose SMs
+are stopped, which has no registered PIO FIFO callbacks, no active PIO DMA
+and no SDK instruction reservations; otherwise it returns 0. Unsupported
+PIO numbers return 0, so `FOR p=0 TO 2` also works on RP2040. This probe
+cannot detect instruction words written directly with `PIO PROGRAM LINE`;
+run destructive tests only when other software is not relying on the block.
+`Testfiles/PioTest.bas` uses this check to auto-select the first eligible PIO.
+Its FIFO interrupt handler reads RX data **inside the handler**, as required
+by BASIC `PIO INTERRUPT`; otherwise an uncleared RX FIFO retriggers forever.
+
 `pm_pio_assemble(int pio, const char *line)` passes **one PIO assembly line**
 to the existing BASIC `PIO ASSEMBLE` command. It does not introduce a second
 instruction parser or duplicate BASIC's `.PROGRAM`, `.LINE`, `.WRAP`,
