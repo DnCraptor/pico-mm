@@ -5063,6 +5063,40 @@ static int NextNamesVar(unsigned char *xstart, unsigned char *vname, int vlen)
 // The NEXT that closes the FOR loop on the variable vname, searching from p
 // (the FOR's nextstmt).  With errmsg NULL it returns NULL where cmd_for
 // raises its error, so the compiler can ask too (core/Stream.c).
+// the first token tok (THEN, ELSE) from p outside quotes, or the zero that ends the element
+static unsigned char *IfFindToken(unsigned char *p, int tok)
+{
+	int q = 0;
+	for (; *p; p++)
+	{
+		if (*p == '"')
+			q = !q;
+		else if (!q && *p == (unsigned char)tok)
+			break;
+	}
+	return p;
+}
+
+/* The command right after the next THEN or ELSE of a single-line IF, searching its element from q (the IF token, or a
+   command this returned), or NULL at the element's end.  The tokeniser does not end an element at THEN or ELSE, so
+   GetNextCommand never stops at a command there: ForFindNext and DoFindLoop ask this for the FOR, DO or WHILE in
+   IF c THEN FOR ...: ...: NEXT, whose NEXT (or LOOP) they do see (issue 147). */
+static unsigned char *IfInlineCommand(unsigned char *q)
+{
+	unsigned char *t, *e;
+	if (commandtbl_at(q) != CMD_NOTOKEN)
+		q += sizeof(CommandToken); // a command token's bytes can have THEN's value
+	t = IfFindToken(q, tokenTHEN);
+	e = IfFindToken(q, tokenELSE);
+	if (e < t)
+		t = e; // each stops at the element's end
+	if (*t == 0)
+		return NULL;
+	t++;
+	skipspace(t);
+	return t;
+}
+
 unsigned char *ForFindNext(unsigned char *p, unsigned char *vname, int vlen, unsigned char *errmsg)
 {
 	int t = 1;
@@ -5076,6 +5110,12 @@ unsigned char *ForFindNext(unsigned char *p, unsigned char *vname, int vlen, uns
 
 		if (tkn == cmdFOR)
 			t++; // count the FOR
+		/* and a FOR right after a single-line IF's THEN or ELSE.  Not a NEXT there (IF c THEN NEXT i): that is a second
+		   way to the end of a loop whose own NEXT follows as a statement, and counting it would pair the wrong NEXT. */
+		if (tkn == cmdIF)
+			for (unsigned char *q = IfInlineCommand(p); q; q = IfInlineCommand(q))
+				if (commandtbl_at(q) == cmdFOR)
+					t++;
 
 		if (tkn == cmdNEXT)
 		{ // is it NEXT
@@ -5623,6 +5663,10 @@ unsigned char *DoFindLoop(unsigned char *p, CommandToken dotoken, unsigned char 
 		CommandToken tkn = commandtbl_at(p);
 		if (tkn == dotoken)
 			i++; // entered a nested DO or WHILE loop
+		if (tkn == cmdIF) // a DO (or WHILE) right after a single-line IF's THEN or ELSE (see IfInlineCommand)
+			for (unsigned char *q = IfInlineCommand(p); q; q = IfInlineCommand(q))
+				if (commandtbl_at(q) == dotoken)
+					i++;
 		if (tkn == cmdLOOP)
 			i--; // exited a nested loop
 		if (i == 0)
