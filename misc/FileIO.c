@@ -49,6 +49,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "sys/stat.h"
 #include "picojpeg.h"
 #include "hardware/sync.h"
+#include "core/elf/elf_picomite.h"
 #ifdef rp2350
 #include "core/tcc/tcc_picomite.h" /* C CSUBs */
 #endif
@@ -4114,7 +4115,7 @@ static unsigned char *MIPS16 lib_firstword(unsigned char *s, const char *word)
    and advances 'text' and 'bin' by them for the next file. */
 static int MIPS16 lib_scan(int fnbr, uint32_t *hash, unsigned char *text, uint32_t *textlen,
                            unsigned char *bin, uint32_t *binlen, uint32_t binmax, int *nfixout,
-                           int *nrecout)
+                           int *nrecout, int *rawcsub)
 {
     int c, prevchar = 0, incsub = 0, isfont, nrec = *nrecout, nfix = *nfixout;
     unsigned char *p, *t = text;
@@ -4171,8 +4172,11 @@ static int MIPS16 lib_scan(int fnbr, uint32_t *hash, unsigned char *text, uint32
                     skipspace(q);
                     if (*q == '"')
                     {
-                        FileClose(fnbr);
-                        error("A C CSUB cannot be in the library");
+                        /* Measure/hash first. A quoted CSUB is compiled at
+                           its final XIP address by SaveProgramToFlash. */
+                        if (bin) error("Internal library CSUB mode");
+                        *rawcsub = 1;
+                        continue;
                     }
                 }
                 if (!lib_hex_line(inpbuf, bin, &bl, binmax))
@@ -4372,12 +4376,14 @@ int LibraryImageValid(const unsigned char *lib)
 }
 
 int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashout, unsigned char **image,
-                           unsigned char **binout, uint32_t *binlenout, int *nfixout, uint32_t skiphash)
+                           unsigned char **binout, uint32_t *binlenout, int *nfixout,
+                           int *rawcsub, uint32_t skiphash)
 {
     int fnbr, fsize, nfix = 0, nrec = 0, i;
     unsigned char *bin = NULL, *text, *t, *b;
     uint32_t textlen = 0, binlen = 0, tl, bl, used = 0, h = LIB_HASH_SEED;
     char *fp;
+    *rawcsub = 0;
 
     if (!InitSDCard())
         return false;
@@ -4402,10 +4408,17 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
         if (!BasicFileOpen(fp, fnbr, FA_READ))
             return false;
         tl = bl = 0;
-        lib_scan(fnbr, &h, NULL, &tl, NULL, &bl, 0xFFFFFFFF, &nfix, &nrec);
+        lib_scan(fnbr, &h, NULL, &tl, NULL, &bl, 0xFFFFFFFF, &nfix, &nrec, rawcsub);
         FileClose(fnbr);
         textlen += tl;
         binlen += bl;
+    }
+    if (*rawcsub)
+    {
+        /* Rebind on firmware changes, even if the .bas is unchanged. */
+        uint32_t id = elf_picomite_firmware_id();
+        for (int k = 0; k < 4; ++k, id >>= 8)
+            h = (h ^ (id & 255u)) * 16777619u;
     }
     *hashout = h;
     /* skiphash is the hash of what the target already holds - the option's
@@ -4415,6 +4428,51 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
        done. */
     if (skiphash && skiphash == h)
         return false; /* already exactly this - nothing to do, and nothing allocated */
+
+    if (*rawcsub)
+    {
+        /* A CSUB built from .c/.elf must be linked AFTER the final library
+           image position is known. Retain its quoted source lines rather
+           than storing a copied (address-bound) CSUB image. */
+        char path[FF_MAX_LFN] = {0};
+        int savedfs, sourcefs;
+        size_t n, pos;
+        if (nfiles != 1)
+            error("C/ELF LIBRARY LOAD requires one BASIC source file");
+        fp = (char *)getFstring(fnames[0]);
+        AppendDefaultExtension(fp, ".bas");
+        fsize = FileSize(fp);
+        savedfs = FatFSFileSystem;
+        getfullfilename(fp, path);
+        sourcefs = FatFSFileSystem;
+        FatFSFileSystem = savedfs;
+        n = (size_t)fsize + strlen(path) + 16u;
+        if (n > EDIT_BUFFER_SIZE - 2048u)
+            error("Not enough memory for C/ELF library source");
+        text = GetTempMemory(n);
+        pos = (size_t)snprintf((char *)text, n, "'#%s%s\r\n",
+                               filesystem_drive_prefix(sourcefs), path);
+        if (pos >= n) error("Library filename too long");
+        fnbr = FindFreeFileNbr();
+        if (!BasicFileOpen(fp, fnbr, FA_READ)) return false;
+        while (!FileEOF(fnbr))
+        {
+            int ch = FileGetChar(fnbr) & 0x7f;
+            if (isprint(ch) || ch == '\r' || ch == '\n' || ch == TAB)
+            {
+                if (pos + 2 >= n) error("Library source too large");
+                text[pos++] = ch == TAB ? ' ' : (unsigned char)ch;
+            }
+        }
+        FileClose(fnbr);
+        if (pos && text[pos - 1] != '\n') text[pos++] = '\n';
+        text[pos] = 0;
+        *image = text;
+        *binout = NULL;
+        *binlenout = 0;
+        *nfixout = 0;
+        return true;
+    }
 
     text = GetTempMemory(textlen + 4);
     if (binlen)
@@ -4433,7 +4491,7 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
             return false;
         tl = 0;
         bl = binlen - used;
-        lib_scan(fnbr, &h, t, &tl, b, &bl, bl, &nfix, &nrec);
+        lib_scan(fnbr, &h, t, &tl, b, &bl, bl, &nfix, &nrec, rawcsub);
         FileClose(fnbr);
         t += tl;
         if (b)

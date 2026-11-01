@@ -5045,6 +5045,7 @@ uint32_t testPSRAM(void)
         SymTabProg = NULL; // the old program's table is gone
         if (SymBegin(pm))
         {
+            if (region == LIBRARY_FLASH) SymLibSave = 1;
             SymCount(pm);
             if (SymRetry())
                 SymCount(pm);
@@ -5477,7 +5478,13 @@ uint32_t testPSRAM(void)
                                          //    initConsole();
         clearrepeat();
         enable_interrupts_pico();
-        SymSetProgram(ProgMemory); // the new program's table
+        if (region == LIBRARY_FLASH)
+        {
+            SymSetLibrary(flash_libmemory);
+            SymSetProgram(ProgMemory); // preserve the dormant program's names
+        }
+        else
+            SymSetProgram(ProgMemory); // the new program's table
         return;
 
     // we only get here in an error situation while writing the program to flash

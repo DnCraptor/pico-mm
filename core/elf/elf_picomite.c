@@ -13,7 +13,6 @@
 #include "core/tcc/tcc_picomite.h"
 #endif
 
-#define ELF_CSUB_MAGIC 0x53434c45u /* "ELCS" */
 #define ELF_RUN_STACK  (24u * 1024u)
 #define ELF_MAX_OBJECT (1024u * 1024u)
 
@@ -43,6 +42,8 @@ static uint32_t elf_firmware_id(void) {
 #endif
     return hash ? hash : 1u;
 }
+
+uint32_t elf_picomite_firmware_id(void) { return elf_firmware_id(); }
 
 static bool elf_resolve_symbol(const char *name, uintptr_t *value, void *ctx) {
     bool csub = (bool)(uintptr_t)ctx;

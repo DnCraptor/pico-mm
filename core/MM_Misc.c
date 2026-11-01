@@ -26,6 +26,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "core/pm_pio_shared.h"
+#include "core/elf/elf_picomite.h"
+#include "core/tcc/tcc_picomite.h"
 #ifdef PICOMITEWEB
 #include "WiFi.h" // setwifi() — defined in net/WiFi.c
 #endif
@@ -2181,6 +2183,15 @@ void MIPS16 cmd_library(void)
             while (*(unsigned int *)pp != 0xffffffff)
             {
                 //                CFunHexLibAddr[++k] = (unsigned int *)m;            // save the address for later adjustment
+                /* A linked ELF/TCC CSUB embeds absolute addresses and an
+                   image-base stamp. LIBRARY SAVE moves its record, invalidating
+                   both. Reject before erasing flash; raw hex CSUBs are safe. */
+                if (!(*(uint32_t *)pp & 0x80000000u) &&
+                    *(uint32_t *)(pp + 4) >= 24 &&
+                    *(uint32_t *)(pp + 8) == 3u &&
+                    (*(uint32_t *)(pp + 12) == ELF_CSUB_MAGIC ||
+                     *(uint32_t *)(pp + 12) == TCC_PM_CSUB_MAGIC))
+                    error("LIBRARY SAVE cannot move linked C/ELF CSUB");
                 j = (*(unsigned int *)(pp + 4)) + 8; // calculate the total size of the CFunction
                 while (j--)
                     *m++ = *pp++; // copy it into RAM
@@ -2193,6 +2204,13 @@ void MIPS16 cmd_library(void)
                // while(*(unsigned int *)p != 0xffffffff && (int)p < Option.PROG_FLASH_SIZE) {
         while (*(unsigned int *)p != 0xffffffff)
         {
+            /* Do not copy an address-bound CSUB from the program either. */
+            if (!(*(uint32_t *)p & 0x80000000u) &&
+                *(uint32_t *)(p + 4) >= 24 &&
+                *(uint32_t *)(p + 8) == 3u &&
+                (*(uint32_t *)(p + 12) == ELF_CSUB_MAGIC ||
+                 *(uint32_t *)(p + 12) == TCC_PM_CSUB_MAGIC))
+                error("LIBRARY SAVE cannot move linked C/ELF CSUB");
             CFunHexAddr[++i] = (unsigned int *)m; // save the address for later adjustment
             j = (*(unsigned int *)(p + 4)) + 8;   // calculate the total size of the CFunction
             while (j--)
@@ -2319,7 +2337,7 @@ void MIPS16 cmd_library(void)
 #endif
         unsigned char *image = NULL, *libbin = NULL;
         uint32_t libbinlen = 0;
-        int libnfix = 0;
+        int libnfix = 0, libraw = 0;
         /* Captured before anything else runs.  Loading the file clears
            CurrentLinePtr somewhere down in the file layer, and writing the
            image sets it to a line inside the library, so by the end of this
@@ -2409,7 +2427,12 @@ void MIPS16 cmd_library(void)
             if (haslib)
                 skiphash = Option.LIBRARY_HASH;
         }
-        loaded = FileLoadLibrary(files, nfiles, &hash, &image, &libbin, &libbinlen, &libnfix, skiphash);
+        loaded = FileLoadLibrary(files, nfiles, &hash, &image, &libbin, &libbinlen, &libnfix,
+                                 &libraw, skiphash);
+#ifdef rp2350
+        if (loaded && libraw && rambase)
+            error("C/ELF library is not supported in RAM slot");
+#endif
 #ifdef rp2350
         if (rambase)
         {
@@ -2462,11 +2485,10 @@ void MIPS16 cmd_library(void)
            rather than at the line we are executing.  Everything after this
            depends on it - error reporting, and the restart below - so put it
            back. */
-        /* NOT SaveProgramToFlash: that stores the hex TEXT of every CSUB as well as
-           the binary built from it, about 3.4x the blob, which is what stopped a
-           large CSUB fitting a library it would otherwise sit in comfortably. The
-           reader above has already split the two; only the binary goes down. */
-        SaveLibraryImage(image, libbin, libbinlen, libnfix, NULL);
+        /* Hex CSUBs use the compact reader/writer. Quoted .c/.elf CSUBs
+           must go through the existing linker at their final flash address. */
+        if (libraw) SaveProgramToFlash(image, false, LIBRARY_FLASH);
+        else SaveLibraryImage(image, libbin, libbinlen, libnfix, NULL);
         CurrentLinePtr = savedline;
         Option.LIBRARY_FLASH_SIZE = MAX_PROG_SIZE;
         Option.LIBRARY_HASH = hash;

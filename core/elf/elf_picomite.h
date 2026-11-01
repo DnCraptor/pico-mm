@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#define ELF_CSUB_MAGIC 0x53434c45u /* "ELCS" */
+
+uint32_t elf_picomite_firmware_id(void);
 bool elf_picomite_is_elf(const char *filename);
 unsigned char *elf_picomite_csub_source(unsigned char *p, unsigned short endtoken, char *line, int size);
 bool elf_picomite_csub_single_object(const char *line, const unsigned char *prog);
