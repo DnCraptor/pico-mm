@@ -7,6 +7,7 @@
 #include "core/pm_runtime.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <limits.h>
 #ifdef rp2350
@@ -68,8 +69,12 @@ static unsigned char *elf_read_file(const char *path, int *length, char *err) {
     int fnbr;
     unsigned char *bytes;
     unsigned int got = 0;
-    if (size <= 0 || size > (int)ELF_MAX_OBJECT) {
-        snprintf(err, MAXERRMSG, "ELF: missing or oversized object");
+    if (size <= 0) {
+        snprintf(err, MAXERRMSG, "ELF: file missing or empty: %.72s", path);
+        return NULL;
+    }
+    if (size > (int)ELF_MAX_OBJECT) {
+        snprintf(err, MAXERRMSG, "ELF: object too large: %.72s", path);
         return NULL;
     }
     fnbr = FindFreeFileNbr();
@@ -175,6 +180,12 @@ bool elf_picomite_csub_single_object(const char *line, const unsigned char *prog
     char path[STRINGSIZE];
     if (!single_path(line, path, sizeof(path))) return false;
     resolve_program_path(prog, path, sizeof(path));
+    /* A missing or invalid .elf/.o is an ELF error, not a request to
+       compile it as C. Keep signature detection for other file suffixes. */
+    size_t n = strlen(path);
+    if ((n >= 4 && !strcasecmp(path + n - 4, ".elf")) ||
+        (n >= 2 && !strcasecmp(path + n - 2, ".o")))
+        return true;
     return elf_picomite_is_elf(path);
 }
 

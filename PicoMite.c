@@ -5022,6 +5022,7 @@ uint32_t testPSRAM(void)
         char cerr[MAXERRMSG], *cline = NULL;
         unsigned char *csubdecl = NULL;
         const uint8_t *scanbase = (region == LIBRARY_FLASH) ? flash_libmemory : flash_progmemory;
+        const unsigned char *csub_origin = scanbase;
         uint32_t writebase = (region == LIBRARY_FLASH) ? (uint32_t)(PROGSTART - MAX_PROG_SIZE) : (uint32_t)PROGSTART;
         initFonts();
 #ifdef rp2350
@@ -5154,6 +5155,11 @@ uint32_t testPSRAM(void)
             if (*p == T_NEWLINE)
             {
                 CurrentLinePtr = p;
+                /* Multi-file LIBRARY LOAD stores a '#path header before
+                   each part; compile relative to the current part. */
+                if (region == LIBRARY_FLASH &&
+                    p[T_NEWLINE_HDR] == 39 && p[T_NEWLINE_HDR + 1] == '#')
+                    csub_origin = p;
                 p += T_NEWLINE_HDR; // skip newline + skip byte
             }
             if (*p == T_LINENBR)
@@ -5233,13 +5239,13 @@ uint32_t testPSRAM(void)
                     {
                         bool was_disabled = irqs_off_pico;
                         if (was_disabled) enable_interrupts_pico();
-                        if (elf_picomite_csub_single_object(cline, scanbase))
+                        if (elf_picomite_csub_single_object(cline, csub_origin))
                             cimg[updatecount] = elf_picomite_csub_compile(csubdecl, cline, XIP_BASE + realflashpointer,
-                                                                          scanbase, &cwords[updatecount], cerr);
+                                                                          csub_origin, &cwords[updatecount], cerr);
 #ifdef rp2350
                         else
                             cimg[updatecount] = tcc_picomite_csub_compile(csubdecl, cline, XIP_BASE + realflashpointer,
-                                                                          scanbase, &cwords[updatecount], cerr);
+                                                                          csub_origin, &cwords[updatecount], cerr);
 #else
                         else
                             snprintf(cerr, sizeof(cerr), "CSUB: expected one ELF object (RP2040)");

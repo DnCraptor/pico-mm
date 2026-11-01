@@ -4382,6 +4382,7 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
     int fnbr, fsize, nfix = 0, nrec = 0, i;
     unsigned char *bin = NULL, *text, *t, *b;
     uint32_t textlen = 0, binlen = 0, tl, bl, used = 0, h = LIB_HASH_SEED;
+    size_t rawsize = 1;
     char *fp;
     *rawcsub = 0;
 
@@ -4408,6 +4409,8 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
         if (!BasicFileOpen(fp, fnbr, FA_READ))
             return false;
         tl = bl = 0;
+        /* Upper bound for each source plus its absolute origin header. */
+        rawsize += (size_t)fsize + FF_MAX_LFN + 16u;
         lib_scan(fnbr, &h, NULL, &tl, NULL, &bl, 0xFFFFFFFF, &nfix, &nrec, rawcsub);
         FileClose(fnbr);
         textlen += tl;
@@ -4434,38 +4437,41 @@ int MIPS16 FileLoadLibrary(unsigned char *fnames[], int nfiles, uint32_t *hashou
         /* A CSUB built from .c/.elf must be linked AFTER the final library
            image position is known. Retain its quoted source lines rather
            than storing a copied (address-bound) CSUB image. */
-        char path[FF_MAX_LFN] = {0};
-        int savedfs, sourcefs;
-        size_t n, pos;
-        if (nfiles != 1)
-            error("C/ELF LIBRARY LOAD requires one BASIC source file");
-        fp = (char *)getFstring(fnames[0]);
-        AppendDefaultExtension(fp, ".bas");
-        fsize = FileSize(fp);
-        savedfs = FatFSFileSystem;
-        getfullfilename(fp, path);
-        sourcefs = FatFSFileSystem;
-        FatFSFileSystem = savedfs;
-        n = (size_t)fsize + strlen(path) + 16u;
-        if (n > EDIT_BUFFER_SIZE - 2048u)
+        size_t pos = 0;
+        if (rawsize > EDIT_BUFFER_SIZE - 2048u)
             error("Not enough memory for C/ELF library source");
-        text = GetTempMemory(n);
-        pos = (size_t)snprintf((char *)text, n, "'#%s%s\r\n",
-                               filesystem_drive_prefix(sourcefs), path);
-        if (pos >= n) error("Library filename too long");
-        fnbr = FindFreeFileNbr();
-        if (!BasicFileOpen(fp, fnbr, FA_READ)) return false;
-        while (!FileEOF(fnbr))
+        text = GetTempMemory(rawsize);
+        for (i = 0; i < nfiles; i++)
         {
-            int ch = FileGetChar(fnbr) & 0x7f;
-            if (isprint(ch) || ch == '\r' || ch == '\n' || ch == TAB)
+            char path[FF_MAX_LFN] = {0};
+            int savedfs, sourcefs, headerlen;
+            fp = (char *)getFstring(fnames[i]);
+            AppendDefaultExtension(fp, ".bas");
+            savedfs = FatFSFileSystem;
+            getfullfilename(fp, path);
+            sourcefs = FatFSFileSystem;
+            FatFSFileSystem = savedfs;
+            /* Record the origin of EACH CSUB, including a second part in a
+               different directory. Linkers use the nearest earlier header. */
+            headerlen = snprintf((char *)text + pos, rawsize - pos,
+                                 "'#%s%s\r\n", filesystem_drive_prefix(sourcefs), path);
+            if (headerlen < 0 || (size_t)headerlen >= rawsize - pos)
+                error("Library filename too long");
+            pos += (size_t)headerlen;
+            fnbr = FindFreeFileNbr();
+            if (!BasicFileOpen(fp, fnbr, FA_READ)) return false;
+            while (!FileEOF(fnbr))
             {
-                if (pos + 2 >= n) error("Library source too large");
-                text[pos++] = ch == TAB ? ' ' : (unsigned char)ch;
+                int ch = FileGetChar(fnbr) & 0x7f;
+                if (isprint(ch) || ch == '\r' || ch == '\n' || ch == TAB)
+                {
+                    if (pos + 2 >= rawsize) error("Library source too large");
+                    text[pos++] = ch == TAB ? ' ' : (unsigned char)ch;
+                }
             }
+            FileClose(fnbr);
+            if (pos && text[pos - 1] != '\n') text[pos++] = '\n';
         }
-        FileClose(fnbr);
-        if (pos && text[pos - 1] != '\n') text[pos++] = '\n';
         text[pos] = 0;
         *image = text;
         *binout = NULL;

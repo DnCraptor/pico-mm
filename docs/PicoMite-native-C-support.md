@@ -430,14 +430,16 @@ Each record carries the firmware's id and its own address:
 
 - A C CSUB is not position independent. A program copied to another flash
   slot or RAM slot without being saved again must be loaded again.
-- `LIBRARY LOAD "driver.bas", O` can install **one BASIC source file** whose
+- `LIBRARY LOAD "driver.bas", O` can install **one or more BASIC source files** whose
   CSUB body references a `.c` file (RP2350 only) or a relocatable `.elf`
   (RP2040/RP2350). The compiler-independent ELF loader/TinyCC binds the
-  CSUB at its final flash-library address. Put the referenced files beside
-  the `.bas` file; the loader supplies the source-directory header. The
+  CSUB at its final flash-library address. Every source file gets a path
+  header, so the referenced `.c/.elf` resolves relative to the `.bas` file
+  declaring that CSUB, including parts in different directories. The
   existing compact path remains in use for hex CSUBs and other libraries.
 - This first phase supports C/ELF CSUBs in the **flash** library, not the
-  PSRAM RAM-library slot, and one `.bas` source rather than multi-file LOAD.
+  PSRAM RAM-library slot. The raw-source writer is selected for the entire
+  multi-file library when at least one part contains a quoted C/ELF CSUB.
   `LIBRARY SAVE` cannot move already linked CSUB images (it would invalidate
   their relocations); instead install from their original `.bas` source.
 - The LIBRARY LOAD hash covers the `.bas` and firmware ABI. Editing a
