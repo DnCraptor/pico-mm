@@ -591,6 +591,9 @@ _Static_assert(sizeof(struct option_s) == 896 + 2048, "struct option_s must stay
                             unsigned char **binout, uint32_t *binlenout, int *nfixout,
                             int *rawcsub, uint32_t skiphash);
         void SaveLibraryImage(unsigned char *pm, unsigned char *bin, uint32_t binlen, int nfix, unsigned char *base);
+#ifdef rp2350
+        void SaveLibrarySourceToRAM(unsigned char *pm, uint8_t *ram);
+#endif
         /* ============================================================================
          * Function declarations - Character and string I/O
          * ============================================================================ */

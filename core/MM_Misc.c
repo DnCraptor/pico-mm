@@ -2430,17 +2430,14 @@ void MIPS16 cmd_library(void)
         loaded = FileLoadLibrary(files, nfiles, &hash, &image, &libbin, &libbinlen, &libnfix,
                                  &libraw, skiphash);
 #ifdef rp2350
-        if (loaded && libraw && rambase)
-            error("C/ELF library is not supported in RAM slot");
-#endif
-#ifdef rp2350
         if (rambase)
         {
             if (!loaded && RamLibMemory == rambase)
                 return; /* attached already: this is the restarted program's second pass */
             if (loaded)
             {
-                SaveLibraryImage(image, libbin, libbinlen, libnfix, rambase);
+                if (libraw) SaveLibrarySourceToRAM(image, rambase);
+                else SaveLibraryImage(image, libbin, libbinlen, libnfix, rambase);
                 uint32_t *tag = (uint32_t *)(rambase + MAX_PROG_SIZE - 8);
                 tag[0] = RAMLIB_MAGIC;
                 tag[1] = hash;

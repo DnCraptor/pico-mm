@@ -52,6 +52,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "core/elf/elf_picomite.h"
 #ifdef rp2350
 #include "core/tcc/tcc_picomite.h" /* C CSUBs */
+#include "core/elf/elf_picomite.h" /* shared ELF loader for RAM CSUBs */
 #endif
 #ifdef PICOMITE
 #include "pico/multicore.h"
@@ -4863,11 +4864,12 @@ void MemWriteClose(void)
     }
 }
 
-void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
+static void MIPS16 SaveProgramToRAMImage(unsigned char *pm, int msg, uint8_t *ram, bool library)
 {
     unsigned char *p, fontnbr, prevchar = 0, buf[STRINGSIZE];
     unsigned short endtoken, tkn;
     int nbr, i, n, SaveSizeAddr, toolong = false;
+    const uint32_t limit = MAX_PROG_SIZE - (library ? 32u : 5u);
     const char *refusal = NULL; // a line tokenise refused, and why
     multi = false;
     tokenise_insub = false;
@@ -4877,6 +4879,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
     int cwords[MAXCFUNCTION] = {0};
     char cerr[MAXERRMSG], *cline = NULL;
     unsigned char *csubdecl = NULL;
+    const unsigned char *csub_origin = ram;
 #endif
     initFonts();
     clearrepeat();
@@ -4890,6 +4893,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
         SymTabProg = NULL; // the old program's table is gone
     if (SymBegin(pm))
     {
+        if (library) SymLibSave = 1;
         SymCount(pm);
         if (SymRetry())
             SymCount(pm);
@@ -4942,7 +4946,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
             MemWriteByte(*p++);
             nbr++;
 
-            if (((uint32_t)realmempointer - (uint32_t)ram) >= MAX_PROG_SIZE - 5)
+            if (((uint32_t)realmempointer - (uint32_t)ram) >= limit)
                 goto exiterror;
         }
         MemWriteByte(0);
@@ -4955,7 +4959,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
     // the symbol table follows the program text, ahead of the CFunction records
     if (SymTableSize())
     {
-        if (((uint32_t)realmempointer - (uint32_t)ram) + SymTableSize() >= MAX_PROG_SIZE - 5)
+        if (((uint32_t)realmempointer - (uint32_t)ram) + SymTableSize() >= limit)
             goto exiterror;
         nbr += SymTableSize();
         SymTableWrite(MemWriteByte, (uint32_t)realmempointer - (uint32_t)ram);
@@ -4982,6 +4986,8 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
         if (*p == T_NEWLINE)
         {
             CurrentLinePtr = p;
+            if (library && p[T_NEWLINE_HDR] == 39 && p[T_NEWLINE_HDR + 1] == '#')
+                csub_origin = p;
             p += T_NEWLINE_HDR; // skip newline + skip byte
         }
         if (*p == T_LINENBR)
@@ -5055,22 +5061,25 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
             }
 #ifdef rp2350
             if (!fontnbr)
-            { // a C CSUB: its files and options in quotes (core/tcc/tcc_picomite.c)
+            { // same ELF/TinyCC dispatch as flash, linked for the RAM entry word
                 unsigned char *endp;
                 if (cline == NULL)
                     cline = GetTempMemory(STRINGSIZE * 4);
-                if ((endp = tcc_picomite_csub_source(p, endtoken, cline, STRINGSIZE * 4)) != NULL)
+                if ((endp = elf_picomite_csub_source(p, endtoken, cline, STRINGSIZE * 4)) != NULL)
                 {
-                    // linked for where it goes: its record's entry word, here
-                    cimg[updatecount] = tcc_picomite_csub_compile(csubdecl, cline, realmempointer,
-                                                                  ram, &cwords[updatecount], cerr);
+                    if (elf_picomite_csub_single_object(cline, csub_origin))
+                        cimg[updatecount] = elf_picomite_csub_compile(csubdecl, cline, realmempointer,
+                                                                       csub_origin, &cwords[updatecount], cerr);
+                    else
+                        cimg[updatecount] = tcc_picomite_csub_compile(csubdecl, cline, realmempointer,
+                                                                       csub_origin, &cwords[updatecount], cerr);
                     if (cimg[updatecount] == NULL)
                     {
                         refusal = cerr;
                         goto exiterror;
                     }
                     realmempointer += 4 * cwords[updatecount];
-                    if (((uint32_t)realmempointer - (uint32_t)ram) >= MAX_PROG_SIZE - 5)
+                    if (((uint32_t)realmempointer - (uint32_t)ram) >= limit)
                         goto exiterror;
                     p = endp;
                     goto csub_linked;
@@ -5089,7 +5098,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
                         {
                             error("Invalid hex word");
                         }
-                        if (((uint32_t)realmempointer - (uint32_t)ram) >= MAX_PROG_SIZE - 5)
+                        if (((uint32_t)realmempointer - (uint32_t)ram) >= limit)
                             goto exiterror;
                         n = n << 4;
                         if (*p <= '9')
@@ -5226,7 +5235,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
 #ifdef rp2350
             if (!fontnbr && cimg[updatecount - 1] != NULL)
             { // the C CSUB linked in the first pass
-                p = tcc_picomite_csub_source(p, endtoken, cline, STRINGSIZE * 4);
+                p = elf_picomite_csub_source(p, endtoken, cline, STRINGSIZE * 4);
                 for (i = 0; i < cwords[updatecount - 1]; i++)
                     MemWriteWord(cimg[updatecount - 1][i]);
                 FreeMemory(cimg[updatecount - 1]);
@@ -5246,7 +5255,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
                         {
                             error("Invalid hex word");
                         }
-                        if (((uint32_t)realmempointer - (uint32_t)ram) >= MAX_PROG_SIZE - 5)
+                        if (((uint32_t)realmempointer - (uint32_t)ram) >= limit)
                             goto exiterror;
                         n = n << 4;
                         if (*p <= '9')
@@ -5285,6 +5294,8 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
         while (*p)
             p++; // look for the zero marking the start of the next element
     }
+    if (library && (uint32_t)realmempointer - (uint32_t)ram + 4u > limit)
+        goto exiterror; // terminator and 32-byte flush must not overwrite RAMLIB_MAGIC
     MemWriteWord(0xffffffff); // make sure that the end of the CFunctions is terminated with an erased word
     MemWriteClose();          // this will flush the buffer and step the flash write pointer to the next word boundary
     if (msg)
@@ -5299,7 +5310,8 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
     memcpy(tknbuf, buf, STRINGSIZE); // restore the token buffer in case there are other commands in it
                                      //    initConsole();
     clearrepeat();
-    SymSetProgram(ProgMemory);
+    if (library) SymSetLibrary(ram);
+    else SymSetProgram(ProgMemory);
     return;
 
 // we only get here in an error situation while writing the program to RAM
@@ -5320,6 +5332,14 @@ exiterror:
     if (toolong)
         error("Line is too long");
     StandardError(29);
+}
+void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram)
+{
+    SaveProgramToRAMImage(pm, msg, ram, false);
+}
+void MIPS16 SaveLibrarySourceToRAM(unsigned char *pm, uint8_t *ram)
+{
+    SaveProgramToRAMImage(pm, false, ram, true);
 }
 int MemLoadProgram(unsigned char *fname, unsigned char *ram)
 {
