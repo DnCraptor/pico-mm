@@ -924,9 +924,6 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
                 dma_rx_pio = pior;
@@ -938,7 +935,6 @@ void MIPS16 cmd_pio(void)
                 int toarraysize = parseintegerarray(argv[6], &aint, 4, 1, dims, true, NULL);
                 RequireGlobal(aint); // DMA uses it after the command returns
                 a1int = (uint32_t *)aint;
-                pio_dma_rx_address = a1int;
                 if (argc >= 9 && *argv[8])
                 {
                         if (nbr == 0)
@@ -964,69 +960,22 @@ void MIPS16 cmd_pio(void)
                                 (size_t)toarraysize * 8u, nbr, 8u << dmasize, 0);
                         return;
                 }
-                dma_channel_config c = dma_channel_get_default_config(dma_rx_chan);
-                channel_config_set_read_increment(&c, false);
-                channel_config_set_transfer_data_size(&c, dmasize);
-                // pio_get_dreq() derives the PIO number from the instance address and
-                // the SDK static_asserts the DREQ layout, PIO 2 included, so it needs
-                // no special case here (it yields 20 + sm for PIO 2 RX).
-                channel_config_set_dreq(&c, pio_get_dreq(pio, sm, false));
-                if (argc == 13)
-                {
-                        int size = getinteger(argv[12]);
-                        if (!(size == 1 || size == 2 || size == 4 || size == 8 || size == 16 || size == 32 || size == 64 || size == 128 || size == 256 || size == 512 || size == 1024 || size == 2048 || size == 4096 || size == 8192 || size == 16384 || size == 32768))
-                                error("Not power of 2");
-                        if (size != 1)
-                        {
-                                int i = 0, j = size;
-                                if (((uint32_t)a1int & (j - 1)) && nbr == 0)
-                                        error("Data alignment error");
-                                while (j >>= 1)
-                                        i++;
-                                i += dmasize;
-                                if ((1 << i) > (toarraysize * 8))
-                                        StandardError(17);
-                                if (nbr == 0)
-                                {
-                                        nbr = size;
-                                        dma_channel_config c2 = dma_channel_get_default_config(dma_rx_chan2); // Get configurations for control channel
-                                        channel_config_set_transfer_data_size(&c2, DMA_SIZE_32);              // Set control channel data transfer size to 32 bits
-                                        channel_config_set_read_increment(&c2, false);                        // Set control channel read increment to false
-                                        channel_config_set_write_increment(&c2, false);                       // Set control channel write increment to false
-                                        channel_config_set_dreq(&c2, 0x3F);
-                                        dma_channel_configure(dma_rx_chan2,
-                                                              &c2,
-                                                              &dma_hw->ch[dma_rx_chan].al2_write_addr_trig,
-                                                              &pio_dma_rx_address,
-                                                              1,
-                                                              false); // Configure control channel
-                                }
-                                if (s_nbr != 0)
-                                        channel_config_set_ring(&c, true, i);
-                                channel_config_set_write_increment(&c, true);
-                        }
-                        else
-                                channel_config_set_write_increment(&c, false);
+                if (argc != 13)
+                        error("Continuous PIO DMA RX requires SIZE");
+                uint32_t size = (uint32_t)getinteger(argv[12]);
+                if (!size || size > 32768u || (size & (size - 1u)))
+                        error("PIO DMA RX size must be a power of two");
+                if (s_nbr) {
+                        pm_pio_dma_finite_rx_hw(pior, sm, a1int,
+                                (size_t)toarraysize * 8u, s_nbr,
+                                8u << dmasize, size);
+                } else {
+                        if (size == 1u)
+                                error("Continuous PIO DMA RX requires SIZE >= 2");
+                        pm_pio_dma_cyclic_hw(0, pior, sm, a1int,
+                                (size_t)toarraysize * 8u, size,
+                                8u << dmasize, 0, 0);
                 }
-                else
-                {
-                        if ((nbr << dmasize) > (toarraysize * 8))
-                                StandardError(17);
-                        channel_config_set_write_increment(&c, true);
-                }
-                if (s_nbr == 0)
-                        channel_config_set_chain_to(&c, dma_rx_chan2); // When this channel completes, it will trigger the channel indicated by chain_to
-                dma_channel_configure(dma_rx_chan,
-                                      &c,
-                                      a1int,                      // Destination pointer
-                                      &pio->rxf[sm],              // Source pointer
-                                      nbr,                        // Number of transfers
-                                      (s_nbr == 0 ? false : true) // Start immediately
-                );
-                if (s_nbr == 0)
-                        dma_start_channel_mask(1u << dma_rx_chan2);
-                pio_sm_restart(pio, sm);
-                pio_sm_set_enabled(pio, sm, true);
                 return;
         }
 
@@ -1063,9 +1012,6 @@ void MIPS16 cmd_pio(void)
 #ifdef rp2350
                 if (PIO2 == false && pior == 2)
                         StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
 #endif
                 int sm = getint(argv[2], 0, 3);
                 dma_tx_pio = pior;
@@ -1077,7 +1023,6 @@ void MIPS16 cmd_pio(void)
                 int toarraysize = parseintegerarray(argv[6], &aint, 4, 1, dims, true, NULL);
                 RequireGlobal(aint); // DMA uses it after the command returns
                 a1int = (uint32_t *)aint;
-                pio_dma_tx_address = a1int;
 
                 // Get optional size parameter (argc == 13)
                 uint32_t size = 0;
@@ -1184,100 +1129,9 @@ void MIPS16 cmd_pio(void)
                                 (size_t)toarraysize * 8u, nbr, 8u << dmasize, 0);
                         return;
                 }
-                dma_channel_config c = dma_channel_get_default_config(dma_tx_chan);
-                channel_config_set_write_increment(&c, false);
-
-                // As above: pio_get_dreq() handles PIO 2 (it yields 16 + sm for TX).
-                channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
-
-                channel_config_set_transfer_data_size(&c, dmasize);
-
-                if (ring_mode)
-                {
-                        // Ring buffer mode: read increment enabled, ring wrapping enabled, continuous operation
-                        channel_config_set_read_increment(&c, true);
-
-                        // Calculate ring size bits
-                        int ring_size_bits = 0;
-                        uint32_t temp_size = size;
-                        while (temp_size >>= 1)
-                                ring_size_bits++;
-                        ring_size_bits += dmasize; // Adjust for transfer size
-
-                        channel_config_set_ring(&c, false, ring_size_bits);
-                        channel_config_set_chain_to(&c, dma_tx_chan2); // Chain to control channel for continuous operation
-
-                        // Configure control channel for retriggering
-                        dma_channel_config c2 = dma_channel_get_default_config(dma_tx_chan2);
-                        channel_config_set_transfer_data_size(&c2, DMA_SIZE_32);
-                        channel_config_set_read_increment(&c2, false);
-                        channel_config_set_write_increment(&c2, false);
-                        channel_config_set_dreq(&c2, 0x3F); // No pacing
-
-                        dma_channel_configure(dma_tx_chan2,
-                                              &c2,
-                                              &dma_hw->ch[dma_tx_chan].al3_read_addr_trig,
-                                              &pio_dma_tx_address,
-                                              1,
-                                              false);
-
-                        // Configure primary channel
-                        dma_channel_configure(dma_tx_chan,
-                                              &c,
-                                              &pio->txf[sm],
-                                              a1int,
-                                              nbr,
-                                              false); // Don't start yet
-
-                        // Start control channel to trigger the sequence
-                        dma_start_channel_mask(1u << dma_tx_chan2);
-                }
-                else if (continuous_retrigger)
-                {
-                        // Continuous retrigger mode: use control channel
-                        channel_config_set_read_increment(&c, true);
-                        channel_config_set_chain_to(&c, dma_tx_chan2);
-
-                        // Configure control channel for retriggering
-                        dma_channel_config c2 = dma_channel_get_default_config(dma_tx_chan2);
-                        channel_config_set_transfer_data_size(&c2, DMA_SIZE_32);
-                        channel_config_set_read_increment(&c2, false);
-                        channel_config_set_write_increment(&c2, false);
-                        channel_config_set_dreq(&c2, 0x3F); // No pacing
-
-                        dma_channel_configure(dma_tx_chan2,
-                                              &c2,
-                                              &dma_hw->ch[dma_tx_chan].al3_read_addr_trig,
-                                              &pio_dma_tx_address,
-                                              1,
-                                              false);
-
-                        // Configure primary channel
-                        dma_channel_configure(dma_tx_chan,
-                                              &c,
-                                              &pio->txf[sm],
-                                              a1int,
-                                              nbr,
-                                              false); // Don't start yet
-
-                        // Start both channels
-                        dma_start_channel_mask((1u << dma_tx_chan) | (1u << dma_tx_chan2));
-                }
-                else
-                {
-                        // Single transfer mode: read increment enabled, no chaining
-                        channel_config_set_read_increment(&c, true);
-
-                        dma_channel_configure(dma_tx_chan,
-                                              &c,
-                                              &pio->txf[sm],
-                                              a1int,
-                                              nbr,
-                                              true); // Start immediately
-                }
-
-                pio_sm_restart(pio, sm);
-                pio_sm_set_enabled(pio, sm, true);
+                pm_pio_dma_cyclic_hw(1, pior, sm, a1int,
+                        (size_t)toarraysize * 8u, nbr,
+                        8u << dmasize, ring_mode, 0);
                 return;
         }
         tp = checkstring(cmdline, (unsigned char *)"INTERRUPT");

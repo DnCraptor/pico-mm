@@ -247,7 +247,7 @@ static void pm_pio_dma_do(void *arg)
          * callback on a momentary DMA channel-chain gap. */
         pm_c_dma_pending &= ~mask;
         pm_pio_dma_cyclic_hw(a->tx,a->pio,a->sm,a->ptr,a->capacity,
-                             a->count,a->bits,a->ring);
+                             a->count,a->bits,a->ring,1);
     } else {
         pm_c_dma_pending |= mask;
         pm_pio_dma_transfer_hw(a->tx,a->pio,a->sm,a->ptr,a->capacity,

@@ -118,6 +118,30 @@ int main(void)
     pm_pio_dma_stop(0);
     armed_rx = 0;
     pm_pio_stop(pio,sm);
+    pm_pio_configure(pio,sm,&config);
+    pm_pio_start(pio,sm);
+    memset(rx,0,16*sizeof(uint32_t));
+    rx_dma_done = 0;
+    pm_pio_dma_rx(pio,sm,rx,16*sizeof(uint32_t),16,32);
+    armed_rx = 1;
+    pm_pio_dma_cyclic_tx(pio,sm,ring,16,4,32,0);
+    armed_tx = 1;
+    deadline = pm_timer_us() + 1000000u;
+    while (pm_timer_us() < deadline && !rx_dma_done) pm_pio_poll();
+    pm_pio_dma_stop(1);
+    armed_tx = 0;
+    if (!rx_dma_done) { puts("cyclic TX retrigger: RX timeout"); goto finish; }
+    for (i = 0; i < 16; ++i) {
+        if (rx[i] != ring[i % 4]) {
+            printf("cyclic TX retrigger: wrong RX[%u] = %08lx\n",i,
+                   (unsigned long)rx[i]);
+            goto finish;
+        }
+    }
+    puts("Cyclic TX retrigger PASS");
+    pm_pio_dma_stop(0);
+    armed_rx = 0;
+    pm_pio_stop(pio,sm);
     /* pio_sm_init() invoked by configure resets the program counter to 0,
      * preventing a stale PUSH from the preceding cyclic-TX phase. */
     pm_pio_configure(pio, sm, &config);

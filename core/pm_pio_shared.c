@@ -430,7 +430,7 @@ uintptr_t pm_pio_dma_pointer_hw(int tx)
  * The restart word is persistent storage in misc/Custom.c, NOT a local
  * variable: DMA continues reading it after this function returns. */
 void pm_pio_dma_cyclic_hw(int tx,int pior,int sm,void *buffer,
-                          size_t capacity,uint32_t count,unsigned bits,int ring)
+                          size_t capacity,uint32_t count,unsigned bits,int ring,int from_c)
 {
     PIO pio = pm_pio_sm_checked(pior,sm);
     unsigned ch = tx ? dma_tx_chan : dma_rx_chan;
@@ -456,7 +456,7 @@ void pm_pio_dma_cyclic_hw(int tx,int pior,int sm,void *buffer,
             error("PIO TX DMA ring requires aligned buffer <= 32768 bytes");
         while ((1u << ring_bits) < bytes) ++ring_bits;
     }
-    if (*pm_pio_dma_slot(tx) && !pm_pio_dma_is_c_hw(tx))
+    if (from_c && *pm_pio_dma_slot(tx) && !pm_pio_dma_is_c_hw(tx))
         error("PIO DMA callback already owned by BASIC");
     pm_pio_dma_stop_hw(tx);
     if (tx) { dma_tx_pio=pior; dma_tx_sm=sm; }
@@ -487,8 +487,46 @@ void pm_pio_dma_cyclic_hw(int tx,int pior,int sm,void *buffer,
     /* The SM may already be processing the opposite DMA direction.
      * pio_sm_restart() clears ISR/shift counters WITHOUT resetting PC;
      * doing this mid-PULL/MOV/PUSH corrupts the loopback stream. */
-    if (!(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+    if (!from_c || !(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
         pio_sm_restart(pio,sm);
+    pio_sm_set_enabled(pio,sm,true);
+}
+
+/* BASIC PIO DMA RX with an explicit transfer count and a destination window.
+ * The window controls hardware address wrap, NOT the total transfer count.
+ * window=1 means all words overwrite the same destination. */
+void pm_pio_dma_finite_rx_hw(int pior,int sm,void *buffer,size_t capacity,
+                             uint32_t count,unsigned bits,uint32_t window)
+{
+    PIO pio=pm_pio_sm_checked(pior,sm);
+    unsigned shift=bits==8?0u:bits==16?1u:bits==32?2u:3u;
+    unsigned ring_bits=0;
+    size_t window_bytes;
+    dma_channel_config cfg;
+    if (shift==3 || !buffer || !count || !window ||
+        window>32768u || (window & (window-1u)))
+        error("Invalid finite PIO RX DMA parameters");
+    window_bytes=(size_t)window << shift;
+    if (window_bytes>capacity ||
+        ((uintptr_t)buffer & ((1u<<shift)-1u)))
+        error("Invalid finite PIO RX DMA buffer");
+    if (window>1) {
+        while ((1u<<ring_bits) < window_bytes) ++ring_bits;
+        if (ring_bits>15u || ((uintptr_t)buffer & (window_bytes-1u)))
+            error("Invalid finite PIO RX DMA ring alignment or size");
+    }
+    pm_pio_dma_stop_hw(0);
+    dma_rx_pio=pior;
+    dma_rx_sm=sm;
+    cfg=dma_channel_get_default_config(dma_rx_chan);
+    channel_config_set_transfer_data_size(&cfg,(enum dma_channel_transfer_size)shift);
+    channel_config_set_dreq(&cfg,pio_get_dreq(pio,(uint)sm,false));
+    channel_config_set_read_increment(&cfg,false);
+    channel_config_set_write_increment(&cfg,window!=1);
+    if (window>1) channel_config_set_ring(&cfg,true,ring_bits);
+    dma_channel_configure(dma_rx_chan,&cfg,buffer,
+                          (const volatile void *)&pio->rxf[sm],count,true);
+    pio_sm_restart(pio,sm);
     pio_sm_set_enabled(pio,sm,true);
 }
 

@@ -56,9 +56,14 @@ uintptr_t pm_pio_dma_pointer_hw(int tx);
  * pio_dma_{rx,tx}_address words. count is elements per repeated block.
  * ring=1: TX address wrapping; ring=0: replay by control-channel reload.
  * For RX, replay always rewinds the destination after each block. */
+/* from_c=0 preserves BASIC's restart and callback ownership semantics. */
 void pm_pio_dma_cyclic_hw(int tx,int pio,int sm,void *buffer,
                           size_t capacity_bytes,uint32_t count,
-                          unsigned bits,int ring);
+                          unsigned bits,int ring,int from_c);
+/* BASIC finite RX with a size=1 fixed destination or power-of-two ring.
+ * The DMA transfer itself has an explicit finite count. */
+void pm_pio_dma_finite_rx_hw(int pio,int sm,void *buffer,size_t capacity,
+                             uint32_t count,unsigned bits,uint32_t window);
 void pm_pio_dma_stop_hw(int tx);
 int pm_pio_dma_busy_hw(int tx);
 #endif

@@ -671,8 +671,8 @@ PIO/DMA notes for API v17:
 - `C/pm_pio_loopback_test.c` runs unchanged on firmware with this API on
   RP2040 and RP2350: no `TEST_PIO_BLOCK` or compile-time board selection.
   It prints `available` and `idle` for each PIO, chooses the first eligible
-  block, and exercises FIFO events, one-shot DMA, cyclic TX ring and RX
-  destination reload. `SKIP` means no
+  block, and exercises FIFO events, one-shot DMA, cyclic TX ring, cyclic
+  TX address-retrigger and RX destination reload. `SKIP` means no
   idle block was found, **not** that loopback passed. There are no GPIO wires.
 - `pm_pio_idle()` checks firmware PIO reservation, enabled SMs, registered
   FIFO interrupts, active PIO DMA and SDK-managed instruction allocations.
@@ -697,9 +697,12 @@ PIO/DMA notes for API v17:
 - Continuous transfers have no end-of-DMA callback: terminate with
   `pm_pio_dma_stop(tx)`, where tx=0 is RX and tx=1 is TX. The runtime also
   aborts C-owned DMA before freeing buffers on RUN exit or C free.
-  The BASIC cyclic branches still contain their pre-existing channel
-  configuration; both APIs use the same DMA channels and global restart
-  words, not additional PIO resources or static buffers.
+  BASIC `PIO DMA RX/TX` and C now configure continuous transfers through
+  the same `pm_pio_dma_cyclic_hw()` implementation and existing reload words.
+  BASIC finite RX with `size` retains its distinct fixed-destination or
+  hardware ring behaviour through `pm_pio_dma_finite_rx_hw()`. A zero-count
+  BASIC RX without a valid repeated block is rejected rather than starting
+  an unconfigured control DMA channel. No new persistent DMA state is added.
 - When RX and TX DMA are attached to the same already running SM, native C
   DMA setup leaves its internal PIO state untouched. `pio_sm_restart()`
   would reset shift counters/ISR without resetting the program counter.
