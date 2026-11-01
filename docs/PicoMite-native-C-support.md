@@ -670,6 +670,26 @@ here applies to the expanded RP2350 runtime.
 
 PIO/DMA notes for API v19:
 
+Register bitfield builders (header-only, no change to the firmware ABI):
+
+- `pm_pio_encode_pinctrl(side_count, set_count, out_count, in_base,
+  side_base, set_base, out_base)` matches BASIC `PIO(PINCTRL ...)`.
+- `pm_pio_encode_execctrl(jmp_pin, wrap_target, wrap, side_pindir,
+  side_enable)` matches BASIC `PIO(EXECCTRL ...)`.
+- `pm_pio_encode_shiftctrl(push_threshold, pull_threshold, autopush,
+  autopull, in_right, out_right, join_rx, join_tx, rx_get, rx_put)`
+  matches BASIC `PIO(SHIFTCTRL ...)`. Pass zero for `rx_get`/`rx_put`
+  on RP2040.
+
+All three are `static inline` in `<picomite/pio.h>`, shared by the BASIC
+parser and native C (TCC or externally compiled ELF). They use numeric
+PIO pin indices rather than BASIC `GP...` tokens, do no hardware I/O,
+allocate no memory, and require no runtime symbol resolution. The BASIC
+parser continues to validate its existing numeric ranges and optional
+arguments. This header-only change does not increment `PM_API_VERSION`.
+`C/pm_pio_loopback_test.c` tests the register encodings before probing
+for an available PIO, so it remains useful on boards with every PIO in use.
+
 - `pm_pio_fstat()` and `pm_pio_fdebug()` read raw PIO status/debug registers;
   BASIC `PIO(FSTAT)` and `PIO(FDEBUG)` now call the same hardware accessors.
   The loopback test checks FSTAT's RXEMPTY status after consuming its test
@@ -738,6 +758,107 @@ PIO/DMA notes for API v19:
   The test expects the exact order of the last four words, not a rotation.
 - `pm_pio_writefifo` and `pm_pio_set_base` mirror the RP2350-only BASIC
   operations; RP2040 firmware reports an unsupported-operation error.
+
+#### `<picomite/pio.h>` reference
+
+The header is embedded verbatim in firmware as a TinyCC ROM header. Details
+are kept here instead of in the embedded source. Its public declarations
+serve both TCC and externally compiled native programs; the three `static
+inline` register encoders are compiled into the caller and require no ELF
+symbol resolution. All state-changing PIO functions are intended for a live
+native C `RUN` scope. Pin bases passed from C use PIO hardware pin indices
+(0..31), not BASIC `GP...` tokens.
+
+**PIO selection, state machines and instruction memory**
+
+| Function | Semantics and restrictions |
+|---|---|
+| `pm_pio_available(pio)` | Reports whether the PIO instance is available to PicoMite C programs; video, audio, USB or other firmware users may reserve an instance. Availability alone is not exclusive ownership. |
+| `pm_pio_idle(pio)` | Returns 1 only when the firmware has not reserved the block, all its SMs are disabled, no FIFO callbacks or PIO DMA are active there, and the SDK instruction allocator has no reservations in the block. Does **not** detect instructions written directly with BASIC `PIO PROGRAM LINE`. |
+| `pm_pio_exec(pio,sm,instruction)` | Executes a single 16-bit PIO instruction on the selected SM. |
+| `pm_pio_write(pio,sm,value)` / `pm_pio_read(pio,sm,&value)` | Write a TX FIFO word / attempt to read an RX FIFO word. `pm_pio_read` returns 1 if a word was read, 0 if RX was empty; the output is valid only on success. |
+| `pm_pio_start(pio,sm)` / `pm_pio_stop(pio,sm)` | Enable/disable the SM. Stop followed by start does **not** reset its program counter; reconfigure the SM to restart a test at a known instruction. |
+| `pm_pio_init_machine(pio,sm,pinctrl,execctrl,shiftctrl,start,clock_hz,sideout,setout,outout)` | Initializes an SM using pre-encoded control register values. The three register encoders below produce the corresponding `pinctrl`, `execctrl` and `shiftctrl` words. |
+| `pm_pio_program(pio,words,count)` | Loads 1..32 16-bit instructions from address 0 and stops all four SMs in the PIO block. Replaces existing instructions; do not use on a block needed by another component. |
+| `pm_pio_program_line(pio,slot,instruction)` | Writes one instruction to the requested slot; the SDK instruction allocator does not track these direct writes. |
+| `pm_pio_clear(pio)` | Clears the PIO block, including SM registers and FIFOs. Existing state and program contents must not be relied upon afterward. |
+| `pm_pio_configure(pio,sm,&config)` | Applies the same SM configuration as BASIC `PIO CONFIGURE`. Initialize the **whole** `pm_pio_config` structure; `start_address`, `wrap_target` and `wrap` must refer to loaded instructions; Boolean fields use 0 or 1. |
+| `pm_pio_sync(pio,my,prev,next)` | Synchronizes selected state machines: bit masks address SMs in the current, preceding and following PIO instances. A zero `prev` or `next` mask excludes that neighbour. |
+
+`pm_pio_config` contains the clock, start and wrap positions, pin bases and
+pin counts for sideset/SET/OUT/IN, jump pin, shift thresholds and direction,
+autopush/autopull, and FIFO join settings. Its pin bases are numeric PIO
+coordinates (0..31), not PicoMite BASIC pin names. `join_rx_get` and
+`join_rx_put` select RP2350-specific FIFO modes and **must be zero on RP2040**.
+All Boolean configuration fields must be 0 or 1. The complete structure
+and its field names remain declared in `<picomite/pio.h>`.
+
+**Register bitfield encoders**
+
+These pure `static inline` helpers perform no hardware I/O, allocate no
+memory, and need neither an active C `RUN` nor a firmware symbol. They match
+BASIC's `PIO(PINCTRL ...)`, `PIO(EXECCTRL ...)` and `PIO(SHIFTCTRL ...)`
+bit-packing. The BASIC parser parses the `GP...` operands, applies its
+existing range checks and supplies defaults for omitted parameters. The C
+helpers accept **numeric** fields and mask each value to the register width;
+they do **not** validate semantic combinations or ranges. C callers must
+supply valid values themselves.
+
+| Encoder and parameters (in order) | Bit positions in resulting `uint32_t` |
+|---|---|
+| `pm_pio_encode_pinctrl(side_count, set_count, out_count, in_base, side_base, set_base, out_base)` | `side_count` 31:29, `set_count` 28:26, `out_count` 24:20, `in_base` 19:15, `side_base` 14:10, `set_base` 9:5, `out_base` 4:0 |
+| `pm_pio_encode_execctrl(jmp_pin, wrap_target, wrap, side_pindir, side_enable)` | `jmp_pin` 28:24, `wrap_target` 11:7, `wrap` 16:12, `side_pindir` 29, `side_enable` 30 |
+| `pm_pio_encode_shiftctrl(push_threshold, pull_threshold, autopush, autopull, in_right, out_right, join_rx, join_tx, rx_get, rx_put)` | `push_threshold` 24:20, `pull_threshold` 29:25, `autopush` 16, `autopull` 17, `in_right` 18, `out_right` 19, `join_rx` 30, `join_tx` 31, `rx_get` 14, `rx_put` 15 |
+
+`rx_get` and `rx_put` are RP2350-specific: **always pass zero** for these
+arguments when targeting RP2040. `side_count` and `set_count` are masked to
+three bits, pin bases and thresholds to five bits, and Boolean fields to
+one bit. For example, the following expressions are checked by
+`C/pm_pio_loopback_test.c` (including on boards with no free PIO block):
+
+```c
+uint32_t pin = pm_pio_encode_pinctrl(3, 2, 7, 11, 12, 13, 14);
+uint32_t ex  = pm_pio_encode_execctrl(11, 3, 27, 1, 1);
+uint32_t sh  = pm_pio_encode_shiftctrl(14, 29, 1, 1, 1, 0, 1, 0, 1, 0);
+/* pin=0x6875b1ae, ex=0x6b01b180, sh=0x7ae74000 */
+```
+
+**FIFO status and RP2350 extensions**
+
+| Function | Semantics |
+|---|---|
+| `pm_pio_flevel(pio,sm,tx)` | For `sm=-1`, returns the raw FLEVEL register. Otherwise gives occupancy (0..15) of the chosen SM FIFO: `tx=1` for TX, `tx=0` for RX. |
+| `pm_pio_fstat(pio)` / `pm_pio_fdebug(pio)` | Read raw PIO status and FIFO debug register values. These reads do not modify the registers; decode using RP2040/RP2350 hardware bit definitions. |
+| `pm_pio_readfifo(pio,sm,fifo)` | RP2350-only `PIO(READFIFO)`: reads RX PUT/GET FIFO slot (`sm` 0..3, `fifo` 0..3). **Consumes** an entry; requires suitable FIFO configuration. Unsupported on RP2040. |
+| `pm_pio_writefifo(pio,sm,fifo,value)` / `pm_pio_set_base(pio,base)` | RP2350-only BASIC `PIO WRITEFIFO` / `PIO SET BASE` operations; unsupported on RP2040. |
+
+**DMA and callbacks**
+
+PIO DMA uses the firmware's **existing** RX and TX channel pairs and
+interrupt slots, shared by BASIC and C. `tx=0` designates RX; `tx=1`
+designates TX. Sample widths (`bits`) are 8, 16 or 32; `count` counts
+samples, not bytes; `capacity_bytes` is the accessible C allocation
+subrange, not necessarily the original size passed to `malloc`.
+
+| Function | Lifetime and completion behaviour |
+|---|---|
+| `pm_pio_dma_rx` / `pm_pio_dma_tx` | One-shot FIFO DMA. The buffer must remain in a live `malloc`/`pm_alloc` allocation belonging to the current C `RUN`. |
+| `pm_pio_dma_rx_ring(...,count,bits,window)` | Finite RX DMA overwriting a power-of-two window; `window=1` repeatedly writes the same element. Window alignment and size restrictions are detailed above. |
+| `pm_pio_dma_cyclic_rx` | Continuously rewrites the same RX destination block, with an address reload between blocks. |
+| `pm_pio_dma_cyclic_tx(...,ring)` | `ring=0`: continuously retriggers from the buffer start; `ring=1`: also enables hardware read-address wrap. |
+| `pm_pio_dma_busy(tx)` / `pm_pio_dma_stop(tx)` | Query/abort a direction's DMA, including its control channel. Explicitly stop continuous transfers before reusing the buffer. |
+| `pm_pio_dma_pointer(tx)` | Reads the active DMA address register, matching BASIC `PIO(DMA RX POINTER)` or `PIO(DMA TX POINTER)`; only the channel owned by the current C `RUN` can be queried. |
+| `pm_pio_on_dma_done(tx,callback)` | Registers a one-shot completion callback. RX signals DMA completion; TX waits for both DMA completion and TX FIFO empty. Continuous transfers do **not** trigger this callback. Pass `NULL` to unregister. |
+| `pm_pio_on_fifo(pio,sm,tx,callback)` | Registers a FIFO condition callback: RX when nonempty, TX when occupancy falls from full to nonzero/non-full. Pass `NULL` to unregister. |
+| `pm_pio_poll()` | Dispatches pending C callbacks in normal C execution context; callbacks do **not** run in an IRQ. Long C loops must poll explicitly. |
+
+Callbacks may call ordinary C API operations, but must not rely on IRQ
+context. The runtime aborts C-owned DMA before freeing its allocation on
+`free()`, normal RUN exit or interruption. A C callback registration does
+not grant ownership of BASIC's DMA resources; firmware checks existing BASIC
+handlers when starting C DMA. The completion callback's TX FIFO-empty
+condition is **not** proof that the PIO program has executed its final
+`PUSH`; see the cyclic-RX test notes above.
 
 Native PCM uses signed 16-bit mono/stereo frames, not bytes. `pm_pcm_play()`
 copies the buffer into firmware memory and may outlive `RUN "file.c"`;

@@ -30,6 +30,18 @@ int main(void)
     int result = 1, armed_rx = 0, armed_tx = 0;
     pm_pio_config config = {0};
     unsigned long long deadline;
+    /* Exact bitfields from BASIC PIO(PINCTRL/EXECCTRL/SHIFTCTRL).
+     * Independent of PIO availability and therefore tested on both MCUs. */
+    if (pm_pio_encode_pinctrl(3,2,7,11,12,13,14) != 0x6875b1aeu ||
+        pm_pio_encode_execctrl(11,3,27,1,1) != 0x6b01b180u ||
+        pm_pio_encode_shiftctrl(14,29,1,1,1,0,1,0,1,0) != 0x7ae74000u ||
+        pm_pio_encode_pinctrl(0,0,0,0,0,0,0) != 0 ||
+        pm_pio_encode_execctrl(0,0,0,0,0) != 0 ||
+        pm_pio_encode_shiftctrl(0,0,0,0,0,0,0,0,0,0) != 0) {
+        puts("PIO register encoding FAIL");
+        return 1;
+    }
+    puts("PIO register encoding PASS");
     for (i = 0; i < 3; ++i) {
         int available = pm_pio_available((int)i);
         int idle = pm_pio_idle((int)i);

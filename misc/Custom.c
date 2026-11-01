@@ -264,15 +264,6 @@ void setup_dma_pio_lines(
 }
 
 #endif
-static inline uint32_t pio_sm_calc_wrap(uint wrap_target, uint wrap)
-{
-        uint32_t calc = 0;
-        //    valid_params_if(PIO, wrap < PIO_INSTRUCTION_COUNT);
-        //    valid_params_if(PIO, wrap_target < PIO_INSTRUCTION_COUNT);
-        return (calc & ~(PIO_SM0_EXECCTRL_WRAP_TOP_BITS | PIO_SM0_EXECCTRL_WRAP_BOTTOM_BITS)) |
-               (wrap_target << PIO_SM0_EXECCTRL_WRAP_BOTTOM_LSB) |
-               (wrap << PIO_SM0_EXECCTRL_WRAP_TOP_LSB);
-}
 int calcsideanddelay(char *p, int sidepins, int maxdelaybits)
 {
         int data = 0;
@@ -2466,91 +2457,74 @@ void fun_pio(void)
         tp = checkstring(ep, (unsigned char *)"PINCTRL");
         if (tp)
         {
-                int64_t myret = 0;
                 getcsargs(&tp, 13);
                 if (argc < 3)
                         SyntaxError();
                 ;
-                myret = (getint(argv[0], 0, 5) << 29); // no of side set pins
+                unsigned side_count = getint(argv[0], 0, 5);
+                unsigned set_count = 0, out_count = 0;
+                unsigned in_base = 0, side_base = 0, set_base = 0, out_base = 0;
                 if (argc > 1 && *argv[2])
-                        myret |= (getint(argv[2], 0, 5) << 26); // no of set pins
+                        set_count = getint(argv[2], 0, 5);
                 if (argc > 3 && *argv[4])
-                        myret |= (getint(argv[4], 0, 31) << 20); // no of OUT pins
+                        out_count = getint(argv[4], 0, 31);
                 if (argc > 5 && *argv[6])
                 {
-                        if (!(mytoupper((char)*argv[6]) == 'G'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[6]) == 'G')) SyntaxError();
                         argv[6]++;
-                        if (!(mytoupper((char)*argv[6]) == 'P'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[6]) == 'P')) SyntaxError();
                         argv[6]++;
-                        myret |= (getint(argv[6], 0, 31) << 15); // IN base
+                        in_base = getint(argv[6], 0, 31);
                 }
                 if (argc > 7 && *argv[8])
                 {
-                        if (!(mytoupper((char)*argv[8]) == 'G'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[8]) == 'G')) SyntaxError();
                         argv[8]++;
-                        if (!(mytoupper((char)*argv[8]) == 'P'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[8]) == 'P')) SyntaxError();
                         argv[8]++;
-                        myret |= (getint(argv[8], 0, 31) << 10); // SIDE SET base
+                        side_base = getint(argv[8], 0, 31);
                 }
                 if (argc > 9 && *argv[10])
                 {
-                        if (!(mytoupper((char)*argv[10]) == 'G'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[10]) == 'G')) SyntaxError();
                         argv[10]++;
-                        if (!(mytoupper((char)*argv[10]) == 'P'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[10]) == 'P')) SyntaxError();
                         argv[10]++;
-                        myret |= (getint(argv[10], 0, 31) << 5); // SET base
+                        set_base = getint(argv[10], 0, 31);
                 }
                 if (argc == 13)
                 {
-                        if (!(mytoupper((char)*argv[12]) == 'G'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[12]) == 'G')) SyntaxError();
                         argv[12]++;
-                        if (!(mytoupper((char)*argv[12]) == 'P'))
-                                SyntaxError();
-                        ;
+                        if (!(mytoupper((char)*argv[12]) == 'P')) SyntaxError();
                         argv[12]++;
-                        myret |= getint(argv[12], 0, 31); // OUT base
+                        out_base = getint(argv[12], 0, 31);
                 }
-                iret = myret;
+                iret = pm_pio_encode_pinctrl(side_count, set_count, out_count,
+                                              in_base, side_base, set_base, out_base);
                 targ = T_INT;
                 return;
         }
         tp = checkstring(ep, (unsigned char *)"EXECCTRL");
         if (tp)
         {
-                int64_t myret = 0;
                 getcsargs(&tp, 9);
-                if (!(argc == 5 || argc == 7 || argc == 9))
-                        SyntaxError();
+                if (!(argc == 5 || argc == 7 || argc == 9)) SyntaxError();
                 ;
-                if (!(mytoupper((char)*argv[0]) == 'G'))
-                        SyntaxError();
-                ;
+                if (!(mytoupper((char)*argv[0]) == 'G')) SyntaxError();
                 argv[0]++;
-                if (!(mytoupper((char)*argv[0]) == 'P'))
-                        SyntaxError();
-                ;
+                if (!(mytoupper((char)*argv[0]) == 'P')) SyntaxError();
                 argv[0]++;
-                myret = (getint(argv[0], 0, 31) << 24); // jmp pin
-                myret |= pio_sm_calc_wrap(getint(argv[2], 0, 31), getint(argv[4], 0, 31));
+                unsigned jmp_pin = getint(argv[0], 0, 31);
+                unsigned wrap_target = getint(argv[2], 0, 31);
+                unsigned wrap = getint(argv[4], 0, 31);
+                unsigned side_pindir = 0, side_enable = 0;
                 if (argc >= 7 && *argv[6])
-                        myret |= (getint(argv[6], 0, 1) << 29); // SIDE_PINDIR
+                        side_pindir = getint(argv[6], 0, 1);
                 if (argc == 9)
-                        myret |= (getint(argv[8], 0, 1) << 30); // SIDE_EN
-                iret = myret;
+                        side_enable = getint(argv[8], 0, 1);
+                iret = pm_pio_encode_execctrl(jmp_pin, wrap_target, wrap,
+                                              side_pindir, side_enable);
                 targ = T_INT;
                 return;
         }
@@ -2576,31 +2550,26 @@ void fun_pio(void)
 #else
                 getcsargs(&tp, 15);
 #endif
-                if (argc < 1)
-                        SyntaxError();
+                if (argc < 1) SyntaxError();
                 ;
-                int64_t myret = 0;
-                myret = (getint(argv[0], 0, 31) << 20);  // push threshold
-                myret |= (getint(argv[2], 0, 31) << 25); // pull threshold
-                if (argc > 3 && *argv[4])
-                        myret |= (getint(argv[4], 0, 1) << 16); // autopush
-                if (argc > 5 && *argv[6])
-                        myret |= (getint(argv[6], 0, 1) << 17); // autopull
-                if (argc > 7 && *argv[8])
-                        myret |= (getint(argv[8], 0, 1) << 18); // IN_SHIFTDIR
-                if (argc > 9 && *argv[10])
-                        myret |= (getint(argv[10], 0, 1) << 19); // OUT_SHIFTDIR
-                if (argc > 11 && *argv[12])
-                        myret |= (getint(argv[12], 0, 1) << 30); // FJOIN_RX
-                if (argc > 13 && *argv[14])
-                        myret |= (getint(argv[14], 0, 1) << 31); // FJOIN_TX
+                unsigned push_threshold = getint(argv[0], 0, 31);
+                unsigned pull_threshold = getint(argv[2], 0, 31);
+                unsigned autopush = 0, autopull = 0, in_right = 0, out_right = 0;
+                unsigned join_rx = 0, join_tx = 0, rx_get = 0, rx_put = 0;
+                if (argc > 3 && *argv[4]) autopush = getint(argv[4], 0, 1);
+                if (argc > 5 && *argv[6]) autopull = getint(argv[6], 0, 1);
+                if (argc > 7 && *argv[8]) in_right = getint(argv[8], 0, 1);
+                if (argc > 9 && *argv[10]) out_right = getint(argv[10], 0, 1);
+                if (argc > 11 && *argv[12]) join_rx = getint(argv[12], 0, 1);
+                if (argc > 13 && *argv[14]) join_tx = getint(argv[14], 0, 1);
 #ifdef rp2350
-                if (argc > 15 && *argv[16])
-                        myret |= (getint(argv[16], 0, 1) << 14); // FJOIN_RX_GET
-                if (argc > 17 && *argv[18])
-                        myret |= (getint(argv[18], 0, 1) << 15); // FJOIN_RX_PUT
+                if (argc > 15 && *argv[16]) rx_get = getint(argv[16], 0, 1);
+                if (argc > 17 && *argv[18]) rx_put = getint(argv[18], 0, 1);
 #endif
-                iret = myret;
+                iret = pm_pio_encode_shiftctrl(push_threshold, pull_threshold,
+                                               autopush, autopull, in_right,
+                                               out_right, join_rx, join_tx,
+                                               rx_get, rx_put);
                 targ = T_INT;
                 return;
         }
