@@ -426,6 +426,72 @@ uintptr_t pm_pio_dma_pointer_hw(int tx)
               : dma_hw->ch[dma_rx_chan].write_addr;
 }
 
+/* Cyclic DMA: one data channel plus BASIC's existing restart channel.
+ * The restart word is persistent storage in misc/Custom.c, NOT a local
+ * variable: DMA continues reading it after this function returns. */
+void pm_pio_dma_cyclic_hw(int tx,int pior,int sm,void *buffer,
+                          size_t capacity,uint32_t count,unsigned bits,int ring)
+{
+    PIO pio = pm_pio_sm_checked(pior,sm);
+    unsigned ch = tx ? dma_tx_chan : dma_rx_chan;
+    unsigned ctl = tx ? dma_tx_chan2 : dma_rx_chan2;
+    unsigned shift = bits==8 ? 0u : bits==16 ? 1u : bits==32 ? 2u : 3u;
+    size_t bytes;
+    unsigned ring_bits=0;
+    dma_channel_config c, c2;
+    uint32_t **reload = tx ? &pio_dma_tx_address : &pio_dma_rx_address;
+    if ((tx != 0 && tx != 1) || shift == 3 || !buffer || !count ||
+        (ring != 0 && ring != 1) ||
+        (!tx && (count & (count-1u))) ||
+        (ring && (count & (count-1u))))
+        error("Invalid cyclic PIO DMA size");
+    if (count > capacity / (1u<<shift))
+        error("PIO DMA buffer too small for cyclic block");
+    bytes = (size_t)count << shift;
+    if ((uintptr_t)buffer & ((1u<<shift)-1u))
+        error("Invalid cyclic PIO DMA buffer");
+    if (ring) {
+        if (!tx) error("RX DMA uses address-reload, not TX ring mode");
+        if (bytes > 32768u || ((uintptr_t)buffer & (bytes-1u)))
+            error("PIO TX DMA ring requires aligned buffer <= 32768 bytes");
+        while ((1u << ring_bits) < bytes) ++ring_bits;
+    }
+    if (*pm_pio_dma_slot(tx) && !pm_pio_dma_is_c_hw(tx))
+        error("PIO DMA callback already owned by BASIC");
+    pm_pio_dma_stop_hw(tx);
+    if (tx) { dma_tx_pio=pior; dma_tx_sm=sm; }
+    else    { dma_rx_pio=pior; dma_rx_sm=sm; }
+    *reload=(uint32_t *)buffer;
+    c=dma_channel_get_default_config(ch);
+    channel_config_set_transfer_data_size(&c,(enum dma_channel_transfer_size)shift);
+    channel_config_set_dreq(&c,pio_get_dreq(pio,(uint)sm,tx!=0));
+    channel_config_set_read_increment(&c,tx!=0);
+    channel_config_set_write_increment(&c,tx==0);
+    channel_config_set_chain_to(&c,ctl);
+    if (ring) channel_config_set_ring(&c,false,ring_bits);
+
+    c2=dma_channel_get_default_config(ctl);
+    channel_config_set_transfer_data_size(&c2,DMA_SIZE_32);
+    channel_config_set_read_increment(&c2,false);
+    channel_config_set_write_increment(&c2,false);
+    channel_config_set_dreq(&c2,0x3f);
+    dma_channel_configure(ctl,&c2,
+        tx ? (volatile void *)&dma_hw->ch[ch].al3_read_addr_trig
+           : (volatile void *)&dma_hw->ch[ch].al2_write_addr_trig,
+        reload,1,false);
+    dma_channel_configure(ch,&c,
+        tx ? (volatile void *)&pio->txf[sm] : buffer,
+        tx ? buffer : (const volatile void *)&pio->rxf[sm],
+        count,false);
+    dma_start_channel_mask(1u << ctl);
+    /* The SM may already be processing the opposite DMA direction.
+     * pio_sm_restart() clears ISR/shift counters WITHOUT resetting PC;
+     * doing this mid-PULL/MOV/PUSH corrupts the loopback stream. */
+    if (!(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+        pio_sm_restart(pio,sm);
+    pio_sm_set_enabled(pio,sm,true);
+}
+
 void pm_pio_dma_stop_hw(int tx)
 {
     unsigned ch,c2;
@@ -435,6 +501,9 @@ void pm_pio_dma_stop_hw(int tx)
     dma_hw->abort=(1u<<ch)|(1u<<c2);
     if (dma_channel_is_busy(ch)) dma_channel_abort(ch);
     if (dma_channel_is_busy(c2)) dma_channel_abort(c2);
+    /* DMA may no longer use the restart word after both channels abort. */
+    if (tx) pio_dma_tx_address = NULL;
+    else pio_dma_rx_address = NULL;
 }
 int pm_pio_dma_busy_hw(int tx)
 {
@@ -468,6 +537,10 @@ void pm_pio_dma_transfer_hw(int tx,int pior,int sm,void *buffer,
         tx ? (volatile void *)&pio->txf[sm] : buffer,
         tx ? buffer : (const volatile void *)&pio->rxf[sm],
         count,true);
-    pio_sm_restart(pio,sm);
+    /* Preserve BASIC's original restart semantics. Native C can start
+     * RX and TX DMA on the same running SM, and must not restart it for
+     * the second direction while instructions are in flight. */
+    if (!from_c || !(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+        pio_sm_restart(pio,sm);
     pio_sm_set_enabled(pio,sm,true);
 }

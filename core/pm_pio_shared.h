@@ -52,6 +52,13 @@ void pm_pio_unregister_c_handlers_hw(void);
 int pm_pio_fifo_event_hw(int pio, int sm, int tx, uint8_t *last_level);
 int pm_pio_dma_complete_hw(int tx);
 uintptr_t pm_pio_dma_pointer_hw(int tx);
+/* Cyclic DMA uses BASIC's RX/TX channel pairs and the shared persistent
+ * pio_dma_{rx,tx}_address words. count is elements per repeated block.
+ * ring=1: TX address wrapping; ring=0: replay by control-channel reload.
+ * For RX, replay always rewinds the destination after each block. */
+void pm_pio_dma_cyclic_hw(int tx,int pio,int sm,void *buffer,
+                          size_t capacity_bytes,uint32_t count,
+                          unsigned bits,int ring);
 void pm_pio_dma_stop_hw(int tx);
 int pm_pio_dma_busy_hw(int tx);
 #endif

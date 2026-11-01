@@ -24,7 +24,8 @@ int main(void)
     const int sm = 0;
     unsigned i;
     uint32_t got = 0;
-    uint32_t *tx = NULL, *rx = NULL;
+    uint32_t *tx = NULL, *rx = NULL, *ring = NULL;
+    void *ring_alloc = NULL;
     int result = 1, armed_rx = 0, armed_tx = 0;
     pm_pio_config config = {0};
     unsigned long long deadline;
@@ -75,9 +76,88 @@ int main(void)
         pm_pio_poll();
     if (rx_dma_done && tx_dma_done && !memcmp(tx, rx, 16 * sizeof(uint32_t))) {
         puts("DMA loopback PASS");
-        result = 0;
-    } else
+    } else {
         printf("DMA failed: RX done=%d TX done=%d\n", rx_dma_done, tx_dma_done);
+        goto finish;
+    }
+    /* Continuous TX in a 16-byte hardware ring, consumed by one-shot RX.
+     * The C allocation is deliberately overallocated for DMA alignment. */
+    pm_pio_dma_stop(0);
+    pm_pio_dma_stop(1);
+    armed_rx = armed_tx = 0;
+    pm_pio_stop(pio, sm);
+    /* startPIO() restarts shift state but does NOT reset the PIO PC.
+     * Reconfigure the SM to start at instruction 0 for this phase. */
+    pm_pio_configure(pio, sm, &config);
+    pm_pio_start(pio, sm);
+    ring_alloc = malloc(16 + 15);
+    if (!ring_alloc) { puts("ring malloc failed"); goto finish; }
+    ring = (uint32_t *)(((uintptr_t)ring_alloc + 15u) & ~(uintptr_t)15u);
+    for (i = 0; i < 4; ++i) ring[i] = 0x11220000u + i;
+    memset(rx, 0, 16 * sizeof(uint32_t));
+    rx_dma_done = 0;
+    pm_pio_dma_rx(pio,sm,rx,16*sizeof(uint32_t),16,32);
+    armed_rx = 1;
+    /* C capacity measures the accessible aligned subrange, not the raw
+     * malloc size. RX callback still uses the normal BASIC completion rule. */
+    pm_pio_dma_cyclic_tx(pio,sm,ring,16,4,32,1);
+    armed_tx = 1;
+    deadline = pm_timer_us() + 1000000u;
+    while (pm_timer_us() < deadline && !rx_dma_done) pm_pio_poll();
+    pm_pio_dma_stop(1);
+    armed_tx = 0;
+    if (!rx_dma_done) { puts("cyclic TX: RX timeout"); goto finish; }
+    for (i = 0; i < 16; ++i) {
+        if (rx[i] != ring[i % 4]) {
+            printf("cyclic TX: wrong RX[%u] = %08lx\n", i,
+                   (unsigned long)rx[i]);
+            goto finish;
+        }
+    }
+    puts("Cyclic TX ring PASS");
+    pm_pio_dma_stop(0);
+    armed_rx = 0;
+    pm_pio_stop(pio,sm);
+    /* pio_sm_init() invoked by configure resets the program counter to 0,
+     * preventing a stale PUSH from the preceding cyclic-TX phase. */
+    pm_pio_configure(pio, sm, &config);
+    pm_pio_start(pio,sm);
+    /* Cyclic RX overwrites four words. The TX-DMA done callback is NOT a
+     * safe end-of-stream marker: TX FIFO empty does not imply that the SM
+     * has executed PUSH for the last word. Its callback also stops the SM.
+     * Instead wait for TX DMA to finish AND for all four expected RX words. */
+    pm_pio_on_dma_done(1, NULL);
+    memset(rx,0,16*sizeof(uint32_t));
+    pm_pio_dma_cyclic_rx(pio,sm,rx,16,4,32);
+    armed_rx = 1;
+    pm_pio_dma_tx(pio,sm,tx,16*sizeof(uint32_t),16,32);
+    armed_tx = 1;
+    deadline = pm_timer_us() + 1000000u;
+    while (pm_timer_us() < deadline) {
+        if (!pm_pio_dma_busy(1) &&
+            rx[0] == tx[12] && rx[1] == tx[13] &&
+            rx[2] == tx[14] && rx[3] == tx[15])
+            break;
+        pm_pio_poll();
+    }
+    {
+        int tx_busy = pm_pio_dma_busy(1);
+        pm_pio_dma_stop(0);
+        armed_rx = 0;
+        if (tx_busy || rx[0] != tx[12] || rx[1] != tx[13] ||
+            rx[2] != tx[14] || rx[3] != tx[15]) {
+            printf("cyclic RX: busy=%d RX=%08lx,%08lx,%08lx,%08lx "
+                   "expected=%08lx,%08lx,%08lx,%08lx\n",
+                   tx_busy,
+                   (unsigned long)rx[0], (unsigned long)rx[1],
+                   (unsigned long)rx[2], (unsigned long)rx[3],
+                   (unsigned long)tx[12], (unsigned long)tx[13],
+                   (unsigned long)tx[14], (unsigned long)tx[15]);
+            goto finish;
+        }
+    }
+    puts("Cyclic RX reload PASS");
+    result = 0;
 finish:
     if (armed_rx) pm_pio_dma_stop(0);
     if (armed_tx) pm_pio_dma_stop(1);
@@ -85,6 +165,7 @@ finish:
     pm_pio_on_dma_done(1, NULL);
     pm_pio_stop(pio, sm);
     pm_pio_clear(pio);
+    free(ring_alloc);
     free(tx);
     free(rx);
     return result;

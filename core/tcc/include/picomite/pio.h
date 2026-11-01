@@ -46,6 +46,20 @@ void pm_pio_dma_rx(int pio, int sm, void *buffer,
                    size_t capacity_bytes, uint32_t count, unsigned bits);
 void pm_pio_dma_tx(int pio, int sm, const void *buffer,
                    size_t capacity_bytes, uint32_t count, unsigned bits);
+/* Continuous DMA replays the same C-owned buffer until pm_pio_dma_stop().
+ * Count is elements per block, must be nonzero. RX and TX ring require
+ * a power of two; TX address-reload accepts any count.
+ * RX reloads its destination after each block, mirroring BASIC DMA RX with
+ * count=0 and size supplied. The transfer overwrites previous samples.
+ * TX ring=0: retrigger from original read address after each block;
+ * TX ring=1: additionally wrap read address modulo count*bits/8 bytes.
+ * TX ring requires buffer alignment to ring bytes and <= 32768 bytes.
+ * Cyclic modes never invoke pm_pio_on_dma_done(); stop explicitly.
+ * Buffers MUST remain in a live allocation of this C RUN. */
+void pm_pio_dma_cyclic_rx(int pio,int sm,void *buffer,
+                          size_t capacity_bytes,uint32_t count,unsigned bits);
+void pm_pio_dma_cyclic_tx(int pio,int sm,const void *buffer,
+                          size_t capacity_bytes,uint32_t count,unsigned bits,int ring);
 int pm_pio_dma_busy(int tx);
 void pm_pio_dma_stop(int tx);
 /* Read the DMA address register as BASIC PIO(DMA ... POINTER) does.

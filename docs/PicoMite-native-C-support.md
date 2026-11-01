@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 16.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 17.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -664,13 +664,15 @@ here applies to the expanded RP2350 runtime.
 | 14 | `pio.h`: FIFO RX/TX callback polling, DMA completion callbacks and DMA address pointers; BASIC interrupt conditions shared with C |
 | 15 | `pio.h`: PIO CONFIGURE and SYNC through the existing BASIC hardware implementation; no duplicate driver |
 | 16 | `pio.h`: automatic safe-target probe (`pm_pio_idle`), BASIC-shared RP2350 PIO WRITEFIFO and SET BASE |
+| 17 | `pio.h`: continuous RX address-reload and TX ring/retrigger DMA on shared BASIC channels; automatic loopback tests |
 
-PIO/DMA notes for API v16:
+PIO/DMA notes for API v17:
 
 - `C/pm_pio_loopback_test.c` runs unchanged on firmware with this API on
   RP2040 and RP2350: no `TEST_PIO_BLOCK` or compile-time board selection.
   It prints `available` and `idle` for each PIO, chooses the first eligible
-  block, and exercises FIFO events and one-shot RX/TX DMA. `SKIP` means no
+  block, and exercises FIFO events, one-shot DMA, cyclic TX ring and RX
+  destination reload. `SKIP` means no
   idle block was found, **not** that loopback passed. There are no GPIO wires.
 - `pm_pio_idle()` checks firmware PIO reservation, enabled SMs, registered
   FIFO interrupts, active PIO DMA and SDK-managed instruction allocations.
@@ -682,10 +684,33 @@ PIO/DMA notes for API v16:
   `static` declarations to file scope (`pio_dma_rx_address` and
   `pio_dma_tx_address`), without increasing static RAM. This makes them
   available to the common DMA engine.
-- C DMA RX/TX currently supports **one-shot transfers only**. Circular RX,
-  TX ring and continuously retriggered modes of BASIC are not yet exported
-  to C. One-shot buffers must remain owned by the running C program and are
-  stopped before its memory is freed.
+- `pm_pio_dma_rx/tx()` remain one-shot. `pm_pio_dma_cyclic_rx()` repeatedly
+  fills the same C-owned destination buffer (`count` elements per block).
+  `pm_pio_dma_cyclic_tx(..., ring=0)` repeats TX from the beginning of the
+  original buffer; `ring=1` also wraps the read address in hardware.
+  RX and TX-ring `count` must be powers of two. TX-retrigger (`ring=0`)
+  allows other positive counts. All use sample widths 8, 16 or 32 bits.
+  For TX ring, the buffer address must align to `count * bits/8` bytes;
+  that ring must not exceed 32768 bytes. An overallocated C `malloc` buffer
+  can be aligned by moving its usable pointer forward while retaining the
+  original allocation for `free()`. `capacity_bytes` is the usable subrange.
+- Continuous transfers have no end-of-DMA callback: terminate with
+  `pm_pio_dma_stop(tx)`, where tx=0 is RX and tx=1 is TX. The runtime also
+  aborts C-owned DMA before freeing buffers on RUN exit or C free.
+  The BASIC cyclic branches still contain their pre-existing channel
+  configuration; both APIs use the same DMA channels and global restart
+  words, not additional PIO resources or static buffers.
+- When RX and TX DMA are attached to the same already running SM, native C
+  DMA setup leaves its internal PIO state untouched. `pio_sm_restart()`
+  would reset shift counters/ISR without resetting the program counter.
+  The cyclic-RX loopback test waits for actual RX data instead of using
+  the TX completion callback, whose FIFO-empty condition can precede the
+  last PIO `PUSH` and which stops the SM.
+- The loopback reinitializes the SM (`pm_pio_configure`) between DMA
+  phases. `pm_pio_stop()` + `pm_pio_start()` does **not** reset the PIO
+  program counter; without reinitialization, resuming at a stale `PUSH`
+  can produce an extra RX word and rotate the four-word cyclic buffer.
+  The test expects the exact order of the last four words, not a rotation.
 - `pm_pio_writefifo` and `pm_pio_set_base` mirror the RP2350-only BASIC
   operations; RP2040 firmware reports an unsupported-operation error.
 
