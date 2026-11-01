@@ -5,6 +5,9 @@
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "core/pm_api.h"
+#include "core/pm_runtime.h"
+#include "core/tcc/include/picomite/gui.h"
+#include "core/tcc/include/picomite/basic.h"
 #include "pico/time.h"
 /* graphics/Draw.c provides these on VGA and non-VGA builds. */
 extern int last_fcolour, last_bcolour;
@@ -21,6 +24,262 @@ static void pm_core_range(int v, int lo, int hi)
     if (v < lo || v > hi)
         error("~ is invalid (valid is ~ to ~)", (long long)v, (long long)lo, (long long)hi);
 }
+
+
+/* Directly dispatch the existing TOUCH()/CLICK() accessors.  The BASIC
+   expression pointer is borrowed only for the duration of this call. */
+typedef struct { const char *key; int value; int click; } pm_point_query;
+static void pm_point_invoke(void *p)
+{
+    pm_point_query *a = p;
+    if (a->click) {
+#if defined(GUICONTROLS) || (defined(PICOMITEVGA) && defined(USBKEYBOARD))
+        fun_click();
+        a->value = (int)iret;
+#else
+        a->value = -2;
+#endif
+    } else {
+#if !defined(PICOMITEVGA) || defined(GUICONTROLS) || defined(USBKEYBOARD)
+        fun_touch();
+        a->value = (int)iret;
+#else
+        a->value = -2;
+#endif
+    }
+}
+static void pm_point_query_do(void *p)
+{
+    pm_point_query *a = p;
+    unsigned char buf[48];
+    unsigned char *old_ep = ep;
+    long long old_iret = iret;
+    int old_targ = targ, old_errno = MMerrno;
+    char old_msg[MAXERRMSG];
+    size_t n;
+    if (!a->key || (n = strlen(a->key)) >= sizeof(buf)) {
+        a->value = -2;
+        return;
+    }
+    memcpy(old_msg, MMErrMsg, sizeof(old_msg));
+    memcpy(buf, a->key, n + 1);
+    ep = buf;
+    if (pm_try(pm_point_invoke, a)) a->value = -2;
+    ep = old_ep;
+    iret = old_iret;
+    targ = old_targ;
+    MMerrno = old_errno;
+    memcpy(MMErrMsg, old_msg, sizeof(old_msg));
+}
+int pm_touch(const char *key)
+{
+    pm_point_query a = {key, -2, 0};
+    pm_core_call(pm_point_query_do, &a);
+    return a.value;
+}
+int pm_click(const char *key)
+{
+    pm_point_query a = {key, -2, 1};
+    pm_core_call(pm_point_query_do, &a);
+    return a.value;
+}
+
+static void pm_gui_badarg(void *p) { (void)p; error("GUI command too long"); }
+void pm_gui(const char *subcommand)
+{
+    char cmd[STRINGSIZE];
+    size_t n;
+    if (!subcommand || (n = strlen(subcommand)) > sizeof(cmd) - 5) {
+        pm_core_call(pm_gui_badarg, NULL);
+        return;
+    }
+    memcpy(cmd, "GUI ", 4);
+    memcpy(cmd + 4, subcommand, n + 1);
+    pm_execute(cmd);
+}
+
+#ifdef GUICONTROLS
+extern int pm_gui_ctrl_number(int, double *);
+extern int pm_gui_ctrl_text(int, char *, unsigned);
+extern int pm_gui_ctrl_set_number(int, double);
+extern int pm_gui_ctrl_set_text(int, const char *);
+#endif
+
+typedef struct { int ref, status; double number; double *number_out; char *text; const char *src; unsigned size; } pm_ctrl_arg;
+static void pm_ctrl_do(void *p)
+{
+    pm_ctrl_arg *a = p;
+#ifdef GUICONTROLS
+    if (a->number_out) a->status = pm_gui_ctrl_number(a->ref, a->number_out);
+    else if (a->src) a->status = pm_gui_ctrl_set_text(a->ref, a->src);
+    else if (a->text) a->status = pm_gui_ctrl_text(a->ref, a->text, a->size);
+    else a->status = pm_gui_ctrl_set_number(a->ref, a->number);
+#else
+    a->status = -1;
+#endif
+}
+int pm_ctrlval_get_number(int ref, double *out)
+{
+    pm_ctrl_arg a = {0};
+    if (!out) return -1;
+    a.ref = ref; a.status = -1; a.number_out = out;
+    pm_core_call(pm_ctrl_do, &a);
+    return a.status;
+}
+int pm_ctrlval_set_number(int ref, double value)
+{
+    pm_ctrl_arg a = {0};
+    a.ref = ref; a.status = -1; a.number = value;
+    pm_core_call(pm_ctrl_do, &a);
+    return a.status;
+}
+int pm_ctrlval_get_text(int ref, char *buf, unsigned size)
+{
+    pm_ctrl_arg a = {0};
+    if (!buf || !size) return -1;
+    a.ref = ref; a.status = -1; a.text = buf; a.size = size;
+    buf[0] = 0;
+    pm_core_call(pm_ctrl_do, &a);
+    return a.status;
+}
+int pm_ctrlval_set_text(int ref, const char *value)
+{
+    pm_ctrl_arg a = {0};
+    if (!value) return -1;
+    a.ref = ref; a.status = -1; a.src = value;
+    pm_core_call(pm_ctrl_do, &a);
+    return a.status;
+}
+
+/* The GUI subscription is optional. Keep only its pointer in static RAM;
+   the queue and all counters live in the RUN allocator and are released
+   on unsubscribe or when the RUN scope ends. */
+#ifdef GUICONTROLS
+#define PM_GUI_EVENTS 16
+struct pm_gui_event { int kind, x, y, ref; };
+struct pm_gui_state {
+    struct pm_gui_event events[PM_GUI_EVENTS];
+    unsigned head, count;
+    pm_gui_callback callback;
+    int down_x, down_y;
+    bool dispatching, down_pending;
+};
+static struct pm_gui_state *pm_gui_active;
+
+static void pm_gui_push(int kind, int x, int y, int ref)
+{
+    struct pm_gui_state *s = pm_gui_active;
+    unsigned slot;
+    if (!s || !pm_runtime_is_running() || !s->callback) return;
+    if (s->count == PM_GUI_EVENTS) {
+        s->head = (s->head + 1) % PM_GUI_EVENTS;
+        --s->count;
+    }
+    slot = (s->head + s->count) % PM_GUI_EVENTS;
+    s->events[slot] = (struct pm_gui_event){kind, x, y, ref};
+    ++s->count;
+}
+void pm_gui_event_down_mark(int x, int y)
+{
+    struct pm_gui_state *s = pm_gui_active;
+    if (!s) return;
+    s->down_pending = pm_runtime_is_running() && s->callback;
+    s->down_x = x;
+    s->down_y = y;
+}
+void pm_gui_event_down_finish(int ref)
+{
+    struct pm_gui_state *s = pm_gui_active;
+    if (!s) return;
+    if (s->down_pending)
+        pm_gui_push(PM_GUI_DOWN, s->down_x, s->down_y, ref);
+    s->down_pending = false;
+}
+void pm_gui_event_up_mark(int x, int y, int ref)
+{
+    pm_gui_push(PM_GUI_UP, x, y, ref);
+}
+#endif
+void pm_gui_runtime_begin(void)
+{
+#ifdef GUICONTROLS
+    pm_gui_active = NULL;
+#endif
+}
+void pm_gui_runtime_end(void)
+{
+#ifdef GUICONTROLS
+    struct pm_gui_state *s = pm_gui_active;
+    pm_gui_active = NULL;
+    if (s) pm_runtime_free(s);
+#endif
+}
+static void pm_gui_subscribe_do(void *p)
+{
+#ifdef GUICONTROLS
+    pm_gui_callback cb = *(pm_gui_callback *)p;
+    struct pm_gui_state *s;
+    if (!pm_runtime_is_running()) error("GUI callbacks require RUN .c/.elf");
+    s = pm_gui_active;
+    if (!cb) {
+        if (!s) return;
+        s->callback = NULL;
+        s->head = s->count = 0;
+        s->down_pending = false;
+        /* Unsubscribe inside a callback: defer free until polling ends. */
+        if (!s->dispatching) {
+            pm_gui_active = NULL;
+            pm_runtime_free(s);
+        }
+        return;
+    }
+    if (!s) {
+        s = pm_runtime_malloc(sizeof(*s));
+        if (!s) error("Not enough memory for GUI event queue");
+        memset(s, 0, sizeof(*s));
+        pm_gui_active = s;
+    }
+    s->callback = cb;
+    s->head = s->count = 0;
+    s->down_pending = false;
+#else
+    (void)p;
+    error("GUI controls are not available");
+#endif
+}
+void pm_gui_on_event(pm_gui_callback callback)
+{
+    pm_core_call(pm_gui_subscribe_do, &callback);
+}
+void pm_gui_runtime_poll(void)
+{
+#ifdef GUICONTROLS
+    struct pm_gui_state *s = pm_gui_active;
+    unsigned quota = PM_GUI_EVENTS;
+    if (!pm_runtime_is_running()) return;
+    /* The BASIC executor calls ProcessTouch() from check_interrupt().
+       Native C RUN/pm_pause() never enters that dispatcher, so GUI CLICK
+       (and mouse/touch input) needs the same main-thread service here.
+       Do not run the GUI engine while a popup drawing is deferred. */
+    if (Ctrl && !(DelayedDrawKeyboard || DelayedDrawFmtBox || DelayedDrawListbox || calibrate))
+        ProcessTouch();
+    if (!s || s->dispatching) return;
+    s->dispatching = true;
+    while (s->count && s->callback && quota--) {
+        struct pm_gui_event ev = s->events[s->head];
+        pm_gui_callback cb = s->callback;
+        s->head = (s->head + 1) % PM_GUI_EVENTS;
+        --s->count;
+        cb(ev.kind, ev.x, ev.y, ev.ref);
+    }
+    s->dispatching = false;
+    if (!s->callback) {
+        pm_gui_active = NULL;
+        pm_runtime_free(s);
+    }
+#endif
+}
+void pm_gui_poll(void) { pm_core_call(NULL, NULL); }
 
 void pm_print(const char *s)
 {

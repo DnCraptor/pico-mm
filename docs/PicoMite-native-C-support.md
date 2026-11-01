@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 22.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 23.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -669,6 +669,54 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 20 | `pio.h`: `pm_pio_assemble(pio,line)` C wrapper for the BASIC PIO assembler (directives, labels and instruction parsing) |
 | 21 | `input.h`: C GPIO edge subscriptions through BASIC's `inttbl[]`, `IntPinArm/Disarm` and delayed event scan |
 | 22 | `input.h`: gamepad state snapshots and RUN-scoped C button-change callbacks using BASIC's event latch |
+| 23 | `gui.h`: direct `pm_touch`/`pm_click` state access, `pm_gui` commands, typed `CTRLVAL`, and RUN-scoped GUI callbacks; `PM_CAP_GUI` |
+
+### GUI/touch API (v23)
+
+`#include <picomite/gui.h>` (also included by `picomite/input.h` and
+`picomite.h`). `pm_get_info().caps & PM_CAP_GUI` reports whether full GUI
+controls exist. RP2040 VGAUSB without GUICONTROLS can read USB touch and
+click but has no GUI control array or GUI callbacks.
+
+`pm_touch("X")`, `pm_touch("DOWN")`, `pm_touch("XN 2")`,
+`pm_touch("SWIPE")` and `pm_click("LASTREF")` call the existing BASIC
+TOUCH()/CLICK() functions directly without tokenizing a BASIC expression.
+Their supported keys, clear-on-read gestures, contact-index limits and
+hardware availability exactly follow the active firmware implementation.
+An unavailable query family returns -2 (an absent contact can return -1).
+Malformed or unsupported keys return -2; the original MMBasic error is
+contained and the C query does not alter BASIC expression state. Do not poll
+one-shot gesture keys twice.
+
+`pm_gui("BUTTON #1,\"OK\",10,10,80,30")` executes the corresponding
+`GUI ...` command through `pm_execute`; it DOES tokenize BASIC text and
+retains every existing control creation, page, string-array, mouse-cursor
+and modal GUI rule. `pm_gui` is not a direct control constructor. The
+argument is the subcommand without the `GUI ` prefix, limited by the
+MMBasic line buffer (251 bytes).
+
+`pm_ctrlval_get_number(ref, &value)`, `pm_ctrlval_set_number(ref, value)`,
+`pm_ctrlval_get_text(ref, buf, cap)` and `pm_ctrlval_set_text(ref, str)`
+operate on the live GUI control array WITHOUT a BASIC expression. Return
+0 on success, -1 for unavailable control/type/argument, -2 for an
+oversized text value or insufficient output buffer. `get_text` writes
+NUL-terminated text. String input is limited to MAXSTRLEN-1 bytes; number
+and string box edit state, LED timer, slider limits, listbox index and
+normal redraw rules are respected. They do not grant C ownership of GUI
+controls: GUI controls and BASIC-backed LISTBOX arrays retain their
+original BASIC lifetimes.
+
+`pm_gui_on_event(callback)` registers a `void callback(int kind, int x,
+int y, int ref)` for PM_GUI_DOWN=1 and PM_GUI_UP=2. This is **not** an IRQ
+callback and does not replace `GUI INTERRUPT` BASIC vectors. The existing
+ProcessTouch() records events and captures the resolved control number,
+then `pm_gui_poll()` / the shared C runtime tick delivers them in the C
+execution context. Up to 16 queued events; if overloaded, oldest events
+are dropped. On C RUN end or `pm_gui_on_event(NULL)` the subscription and
+queue are discarded, without resetting BASIC's GUI controls or interrupt
+vectors. Registration requires an active `.c`/`.elf` RUN with GUICONTROLS;
+it is not available to external CSUBs. GUI creation and CTRLVAL mutation
+are likewise not exported to CSUBs. `PM_API_VERSION` is 23.
 
 Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
 fill `state.size = sizeof state` first; returns 1 for a supported controller,

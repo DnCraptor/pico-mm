@@ -55,4 +55,6 @@ void pm_cursor_link(int link);
 void pm_cursor_load(const char *file);
 void pm_cursor_move(int x, int y);
 
+#include "gui.h"
+
 #endif

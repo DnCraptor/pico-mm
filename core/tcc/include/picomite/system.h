@@ -2,7 +2,7 @@
 #ifndef _PICOMITE_SYSTEM_H
 #define _PICOMITE_SYSTEM_H
 
-#define PM_API_VERSION 22
+#define PM_API_VERSION 23
 unsigned pm_api_version(void);
 
 #define PM_CAP_DISPLAY     0x0001
@@ -14,6 +14,7 @@ unsigned pm_api_version(void);
 #define PM_CAP_BLUETOOTH   0x0040
 #define PM_CAP_HDMI        0x0080
 #define PM_CAP_VGA         0x0100
+#define PM_CAP_GUI         0x0200
 
 typedef struct pm_info
 {

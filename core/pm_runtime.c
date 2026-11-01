@@ -16,7 +16,7 @@
 #include <setjmp.h>
 #include "pico/time.h"
 
-#define PM_RUNTIME_VERSION 22u
+#define PM_RUNTIME_VERSION 23u
 
 typedef union pm_runtime_block {
     struct {
@@ -67,6 +67,8 @@ void pm_gpio_runtime_begin(void);
 void pm_gpio_runtime_end(void);
 void pm_gamepad_runtime_begin(void);
 void pm_gamepad_runtime_end(void);
+void pm_gui_runtime_begin(void);
+void pm_gui_runtime_end(void);
 void pm_pio_runtime_before_free(const void *allocation, size_t size);
 const void *pm_runtime_basic_resolve(const char *name);
 unsigned pm_runtime_basic_firmware_id(void);
@@ -87,6 +89,7 @@ void pm_runtime_begin(void)
     pm_pio_runtime_begin();
     pm_gpio_runtime_begin();
     pm_gamepad_runtime_begin();
+    pm_gui_runtime_begin();
 }
 
 void pm_runtime_end(void)
@@ -99,6 +102,7 @@ void pm_runtime_end(void)
     pm_pio_runtime_end();
     pm_gpio_runtime_end();
     pm_gamepad_runtime_end();
+    pm_gui_runtime_end();
     pm_runtime_periph_end();
     pm_runtime_tick_reset();
     b = pm_runtime_blocks;
@@ -262,6 +266,8 @@ bool pm_runtime_csub_forbidden(const char *name)
         "__tcc_pm_stdin", "pm_settick",
         "pm_gpio_on_edge", "pm_gpio_poll",
         "pm_gamepad_on_change", "pm_gamepad_poll",
+        "pm_gui_on_event", "pm_gui_poll", "pm_gui",
+        "pm_ctrlval_set_number", "pm_ctrlval_set_text",
         "pm_adc_read", "pm_adc_read_raw", "pm_pwm_open",
         "pm_pwm_set_duty", "pm_pwm_set_frequency", "pm_pwm_close",
         "pm_serial_open", "pm_serial_read", "pm_serial_write",
@@ -335,6 +341,9 @@ int pm_runtime_get_info(void *out)
     if (SDCardConfigured()) i.caps |= 0x0008;
 #ifdef USBKEYBOARD
     i.caps |= 0x0010;
+#endif
+#ifdef GUICONTROLS
+    i.caps |= 0x0200;
 #endif
 #ifdef PICOMITEWEB
     i.caps |= 0x0020;

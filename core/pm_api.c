@@ -298,6 +298,15 @@ extern int pm_pcm_playing(void);
 extern void pm_pcm_poll(void);
 extern void pm_colour(int, int);
 extern void pm_mode(int);
+extern int pm_touch(const char *);
+extern int pm_click(const char *);
+extern void pm_gui(const char *);
+extern int pm_ctrlval_get_number(int, double *);
+extern int pm_ctrlval_set_number(int, double);
+extern int pm_ctrlval_get_text(int, char *, unsigned);
+extern int pm_ctrlval_set_text(int, const char *);
+extern void pm_gui_on_event(void (*)(int, int, int, int));
+extern void pm_gui_poll(void);
 
 extern const void *const CallTable[];
 typedef struct { const char *name; const void *address; } pm_core_symbol;
@@ -324,6 +333,15 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_gamepad_get)
     PM_CORE_SYM(pm_gamepad_on_change)
     PM_CORE_SYM(pm_gamepad_poll)
+    PM_CORE_SYM(pm_touch)
+    PM_CORE_SYM(pm_click)
+    PM_CORE_SYM(pm_gui)
+    PM_CORE_SYM(pm_ctrlval_get_number)
+    PM_CORE_SYM(pm_ctrlval_set_number)
+    PM_CORE_SYM(pm_ctrlval_get_text)
+    PM_CORE_SYM(pm_ctrlval_set_text)
+    PM_CORE_SYM(pm_gui_on_event)
+    PM_CORE_SYM(pm_gui_poll)
     PM_CORE_SYM(pm_print)
     PM_CORE_SYM(pm_yield)
     PM_CORE_SYM(pm_delay_us)

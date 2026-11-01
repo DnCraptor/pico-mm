@@ -36,4 +36,6 @@ void pm_pin_mode(int gp, int mode);
 void pm_pin_write(int gp, int value);
 int pm_pin_read(int gp);
 
+#include "picomite/gui.h"
+
 #endif
