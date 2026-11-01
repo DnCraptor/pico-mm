@@ -7,6 +7,8 @@
 #include "core/pm_pio_shared.h"
 #include "core/tcc/include/picomite/pio.h"
 #include <string.h>
+#include <stdio.h>
+#include "core/tcc/include/picomite/basic.h"
 extern int dma_tx_pio, dma_tx_sm, dma_rx_pio, dma_rx_sm;
 
 /* Only resources started by this RUN may be stopped during teardown. */
@@ -138,6 +140,22 @@ void pm_pio_program(int pio, const uint16_t *words, size_t count)
 {
     pm_pio_program_args args = {pio, words, count};
     pm_core_call(pm_pio_program_do, &args);
+}
+/* PIO ASSEMBLE owns parsing, labels and directives.  Quote one line only. */
+void pm_pio_assemble(int pio,const char *line)
+{
+    char cmd[STRINGSIZE];
+    int n;
+    pm_pio_require_run();
+    if (!line || strpbrk(line, "\"\r\n"))
+        error("Invalid PIO assembler line");
+    if (!pm_pio_available(pio))
+        error("PIO unavailable");
+    pm_pio_require_idle_dma();
+    n=snprintf(cmd,sizeof cmd,"PIO ASSEMBLE %d,\"%s\"",pio,line);
+    if (n<0 || (size_t)n>=sizeof cmd)
+        error("PIO assembler line too long");
+    pm_execute(cmd);
 }
 static void pm_pio_program_line_do(void *arg)
 {
@@ -413,6 +431,7 @@ static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_stop)
     PM_PIO_SYM(pm_pio_init_machine)
     PM_PIO_SYM(pm_pio_program)
+    PM_PIO_SYM(pm_pio_assemble)
     PM_PIO_SYM(pm_pio_program_line)
     PM_PIO_SYM(pm_pio_clear)
     PM_PIO_SYM(pm_pio_flevel)

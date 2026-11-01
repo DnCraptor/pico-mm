@@ -14,6 +14,7 @@ void pm_pio_start(int,int);
 void pm_pio_stop(int,int);
 void pm_pio_init_machine(int,int,uint32_t,uint32_t,uint32_t,int,float,int,int,int);
 void pm_pio_program(int,const uint16_t *,size_t);
+void pm_pio_assemble(int,const char *);
 void pm_pio_program_line(int,int,uint16_t);
 void pm_pio_clear(int);
 uint32_t pm_pio_flevel(int,int,int);

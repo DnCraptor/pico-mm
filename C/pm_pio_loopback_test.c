@@ -54,7 +54,12 @@ int main(void)
     }
     printf("Testing PIO%d SM%d\n",pio,sm);
     pm_pio_clear(pio);
-    pm_pio_program(pio, echo_program, 4);
+    pm_pio_assemble(pio, ".PROGRAM LOOPBACK");
+    pm_pio_assemble(pio, "PULL BLOCK");
+    pm_pio_assemble(pio, "MOV ISR, OSR");
+    pm_pio_assemble(pio, "PUSH BLOCK");
+    pm_pio_assemble(pio, "JMP 0");
+    pm_pio_assemble(pio, ".END PROGRAM");
     config.clock_hz = 15000000;
     config.jmp_pin = -1;
     config.wrap = 3;
@@ -81,7 +86,12 @@ int main(void)
     }
     printf("PIO FSTAT/FDEBUG PASS (FDEBUG=%08lx)\n",
            (unsigned long)pm_pio_fdebug(pio));
-    puts("FIFO loopback PASS");
+    puts("FIFO loopback / PIO assembler PASS");
+    /* Keep testing the direct binary PROGRAM path as well. */
+    pm_pio_stop(pio,sm);
+    pm_pio_program(pio,echo_program,4);
+    pm_pio_configure(pio,sm,&config);
+    pm_pio_start(pio,sm);
     tx = (uint32_t *)malloc(16 * sizeof(uint32_t));
     rx = (uint32_t *)malloc(16 * sizeof(uint32_t));
     if (!tx || !rx) { puts("malloc failed"); goto finish; }

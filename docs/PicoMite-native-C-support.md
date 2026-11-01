@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 19.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 20.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -667,8 +667,36 @@ here applies to the expanded RP2350 runtime.
 | 17 | `pio.h`: continuous RX address-reload and TX ring/retrigger DMA on shared BASIC channels; automatic loopback tests |
 | 18 | `pio.h`: finite RX DMA with power-of-two destination window (`pm_pio_dma_rx_ring`), shared with BASIC |
 | 19 | `pio.h`: BASIC-shared PIO(FSTAT), PIO(FDEBUG) and RP2350 PIO(READFIFO) hardware accessors |
+| 20 | `pio.h`: `pm_pio_assemble(pio,line)` C wrapper for the BASIC PIO assembler (directives, labels and instruction parsing) |
 
-PIO/DMA notes for API v19:
+PIO/DMA notes for API v20:
+
+`pm_pio_assemble(int pio, const char *line)` passes **one PIO assembly line**
+to the existing BASIC `PIO ASSEMBLE` command. It does not introduce a second
+instruction parser or duplicate BASIC's `.PROGRAM`, `.LINE`, `.WRAP`,
+`.SIDE_SET`, labels or `side`/delay syntax. Call once per source line:
+
+```c
+pm_pio_assemble(pio, ".PROGRAM LOOPBACK");
+pm_pio_assemble(pio, "PULL BLOCK");
+pm_pio_assemble(pio, "MOV ISR, OSR");
+pm_pio_assemble(pio, "PUSH BLOCK");
+pm_pio_assemble(pio, "JMP 0");
+pm_pio_assemble(pio, ".END PROGRAM");
+```
+
+`pio` identifies an available PIO block (the caller must ensure it is safe
+to overwrite its instruction memory). The line has to fit in the MMBasic
+statement buffer after adding `PIO ASSEMBLE N,` and its string quotes. Double
+quotes, CR and LF in `line` are rejected to prevent injecting a second BASIC
+statement. A semicolon can still introduce an assembler comment; a colon
+can still terminate a label. This function requires a live C RUN and does
+not run from ELF CSUBs. As with BASIC, callers must complete a `.PROGRAM`
+sequence with `.END PROGRAM`; interrupted assemblies retain BASIC's own
+assembler state. BASIC errors propagate through the existing `pm_execute()`
+error mechanism and may be caught by `pm_try()`. The test now compiles its
+PIO echo program through this wrapper before testing the binary PROGRAM path.
+
 
 Register bitfield builders (header-only, no change to the firmware ABI):
 
