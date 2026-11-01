@@ -496,7 +496,7 @@ void pm_pio_dma_cyclic_hw(int tx,int pior,int sm,void *buffer,
  * The window controls hardware address wrap, NOT the total transfer count.
  * window=1 means all words overwrite the same destination. */
 void pm_pio_dma_finite_rx_hw(int pior,int sm,void *buffer,size_t capacity,
-                             uint32_t count,unsigned bits,uint32_t window)
+                             uint32_t count,unsigned bits,uint32_t window,int from_c)
 {
     PIO pio=pm_pio_sm_checked(pior,sm);
     unsigned shift=bits==8?0u:bits==16?1u:bits==32?2u:3u;
@@ -515,6 +515,8 @@ void pm_pio_dma_finite_rx_hw(int pior,int sm,void *buffer,size_t capacity,
         if (ring_bits>15u || ((uintptr_t)buffer & (window_bytes-1u)))
             error("Invalid finite PIO RX DMA ring alignment or size");
     }
+    if (from_c && *pm_pio_dma_slot(0) && !pm_pio_dma_is_c_hw(0))
+        error("PIO DMA callback already owned by BASIC");
     pm_pio_dma_stop_hw(0);
     dma_rx_pio=pior;
     dma_rx_sm=sm;
@@ -526,7 +528,10 @@ void pm_pio_dma_finite_rx_hw(int pior,int sm,void *buffer,size_t capacity,
     if (window>1) channel_config_set_ring(&cfg,true,ring_bits);
     dma_channel_configure(dma_rx_chan,&cfg,buffer,
                           (const volatile void *)&pio->rxf[sm],count,true);
-    pio_sm_restart(pio,sm);
+    /* BASIC historically restarts the SM; C may attach RX to an SM that
+     * already has TX DMA in flight, so preserve its shift state and PC. */
+    if (!from_c || !(pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))))
+        pio_sm_restart(pio,sm);
     pio_sm_set_enabled(pio,sm,true);
 }
 

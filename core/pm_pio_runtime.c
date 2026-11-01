@@ -220,7 +220,8 @@ typedef struct {
     size_t capacity;
     uint32_t count;
     unsigned bits;
-    int cyclic, ring;
+    int mode, ring; /* 0=one-shot, 1=cyclic, 2=finite RX window */
+    uint32_t window;
 } pm_pio_dma_args;
 static void pm_pio_dma_do(void *arg)
 {
@@ -242,7 +243,7 @@ static void pm_pio_dma_do(void *arg)
      * MMBasic error longjmps out of the shared hardware implementation. */
     pm_c_dma_owned |= mask;
     pm_c_dma_buffer[a->tx] = a->ptr;
-    if (a->cyclic) {
+    if (a->mode == 1) {
         /* Cyclic channels never finish; do not synthesize a completion
          * callback on a momentary DMA channel-chain gap. */
         pm_c_dma_pending &= ~mask;
@@ -250,24 +251,35 @@ static void pm_pio_dma_do(void *arg)
                              a->count,a->bits,a->ring,1);
     } else {
         pm_c_dma_pending |= mask;
-        pm_pio_dma_transfer_hw(a->tx,a->pio,a->sm,a->ptr,a->capacity,
-                               a->count,a->bits,1);
+        if (a->mode == 2) {
+            pm_pio_dma_finite_rx_hw(a->pio,a->sm,a->ptr,a->capacity,
+                                    a->count,a->bits,a->window,1);
+        } else {
+            pm_pio_dma_transfer_hw(a->tx,a->pio,a->sm,a->ptr,a->capacity,
+                                   a->count,a->bits,1);
+        }
     }
     pm_c_sm_owned[a->pio] |= 1u << a->sm;
 }
 void pm_pio_dma_rx(int pio,int sm,void *buf,size_t capacity,uint32_t count,unsigned bits)
-{ pm_pio_dma_args a={0,pio,sm,buf,capacity,count,bits,0,0};pm_core_call(pm_pio_dma_do,&a); }
+{ pm_pio_dma_args a={0,pio,sm,buf,capacity,count,bits,0,0,0};pm_core_call(pm_pio_dma_do,&a); }
 void pm_pio_dma_tx(int pio,int sm,const void *buf,size_t capacity,uint32_t count,unsigned bits)
-{ pm_pio_dma_args a={1,pio,sm,(void *)buf,capacity,count,bits,0,0};
+{ pm_pio_dma_args a={1,pio,sm,(void *)buf,capacity,count,bits,0,0,0};
+  pm_core_call(pm_pio_dma_do,&a); }
+/* Finite RX with a 1-element overwrite target or an address-wrapping ring.
+ * This is the same hardware path used by BASIC PIO DMA RX count,...,size. */
+void pm_pio_dma_rx_ring(int pio,int sm,void *buf,size_t capacity,
+                        uint32_t count,unsigned bits,uint32_t window)
+{ pm_pio_dma_args a={0,pio,sm,buf,capacity,count,bits,2,0,window};
   pm_core_call(pm_pio_dma_do,&a); }
 /* Cyclic RX reloads the same destination block; cyclic TX can either
  * replay via address reload or wrap in a power-of-two TX ring. */
 void pm_pio_dma_cyclic_rx(int pio,int sm,void *buf,size_t capacity,uint32_t count,unsigned bits)
-{ pm_pio_dma_args a={0,pio,sm,buf,capacity,count,bits,1,0};
+{ pm_pio_dma_args a={0,pio,sm,buf,capacity,count,bits,1,0,0};
   pm_core_call(pm_pio_dma_do,&a); }
 void pm_pio_dma_cyclic_tx(int pio,int sm,const void *buf,size_t capacity,
                           uint32_t count,unsigned bits,int ring)
-{ pm_pio_dma_args a={1,pio,sm,(void *)buf,capacity,count,bits,1,ring};
+{ pm_pio_dma_args a={1,pio,sm,(void *)buf,capacity,count,bits,1,ring,0};
   pm_core_call(pm_pio_dma_do,&a); }
 static void pm_pio_dma_busy_do(void *p)
 { int *a=p; pm_pio_require_run();a[1]=pm_pio_dma_busy_hw(a[0]); }
@@ -389,6 +401,7 @@ static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_sync)
     PM_PIO_SYM(pm_pio_dma_rx)
     PM_PIO_SYM(pm_pio_dma_tx)
+    PM_PIO_SYM(pm_pio_dma_rx_ring)
     PM_PIO_SYM(pm_pio_dma_cyclic_rx)
     PM_PIO_SYM(pm_pio_dma_cyclic_tx)
     PM_PIO_SYM(pm_pio_dma_busy)

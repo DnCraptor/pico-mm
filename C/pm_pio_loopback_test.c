@@ -25,7 +25,8 @@ int main(void)
     unsigned i;
     uint32_t got = 0;
     uint32_t *tx = NULL, *rx = NULL, *ring = NULL;
-    void *ring_alloc = NULL;
+    void *ring_alloc = NULL, *rxring_alloc = NULL;
+    uint32_t *rxring = NULL;
     int result = 1, armed_rx = 0, armed_tx = 0;
     pm_pio_config config = {0};
     unsigned long long deadline;
@@ -181,6 +182,72 @@ int main(void)
         }
     }
     puts("Cyclic RX reload PASS");
+    pm_pio_dma_stop(1);
+    armed_tx = 0;
+    pm_pio_stop(pio, sm);
+    pm_pio_configure(pio, sm, &config);
+    pm_pio_start(pio, sm);
+    /* Finite RX: 16 words into a four-word hardware-wrapping destination.
+     * Extra guard words catch a missing ring configuration. */
+    rxring_alloc = malloc(32 + 15);
+    if (!rxring_alloc) { puts("finite RX: malloc failed"); goto finish; }
+    rxring = (uint32_t *)(((uintptr_t)rxring_alloc + 15u) & ~(uintptr_t)15u);
+    for (i = 0; i < 8; ++i) rxring[i] = 0xfeed0000u + i;
+    rx_dma_done = 0;
+    pm_pio_dma_rx_ring(pio, sm, rxring, 16, 16, 32, 4);
+    armed_rx = 1;
+    pm_pio_dma_tx(pio, sm, tx, 16*sizeof(uint32_t), 16, 32);
+    armed_tx = 1;
+    deadline = pm_timer_us() + 1000000u;
+    while (pm_timer_us() < deadline && !rx_dma_done) pm_pio_poll();
+    if (!rx_dma_done) { puts("finite RX ring: timeout"); goto finish; }
+    pm_pio_dma_stop(0);
+    armed_rx = 0;
+    pm_pio_dma_stop(1);
+    armed_tx = 0;
+    for (i = 0; i < 4; ++i) {
+        if (rxring[i] != tx[12 + i]) {
+            printf("finite RX ring: wrong [%u] = %08lx, expected %08lx\n",
+                   i, (unsigned long)rxring[i], (unsigned long)tx[12 + i]);
+            goto finish;
+        }
+    }
+    for (i = 4; i < 8; ++i) {
+        if (rxring[i] != 0xfeed0000u + i) {
+            printf("finite RX ring: guard [%u] overwritten\n", i);
+            goto finish;
+        }
+    }
+    puts("Finite RX ring PASS");
+    pm_pio_stop(pio, sm);
+    pm_pio_configure(pio, sm, &config);
+    pm_pio_start(pio, sm);
+    /* A one-element window must repeatedly overwrite only word zero. */
+    for (i = 0; i < 8; ++i) rxring[i] = 0xfeed0000u + i;
+    rx_dma_done = 0;
+    pm_pio_dma_rx_ring(pio, sm, rxring, 4, 16, 32, 1);
+    armed_rx = 1;
+    pm_pio_dma_tx(pio, sm, tx, 16*sizeof(uint32_t), 16, 32);
+    armed_tx = 1;
+    deadline = pm_timer_us() + 1000000u;
+    while (pm_timer_us() < deadline && !rx_dma_done) pm_pio_poll();
+    if (!rx_dma_done) { puts("finite RX single: timeout"); goto finish; }
+    pm_pio_dma_stop(0);
+    armed_rx = 0;
+    pm_pio_dma_stop(1);
+    armed_tx = 0;
+    if (rxring[0] != tx[15]) {
+        printf("finite RX single: got %08lx, expected %08lx\n",
+               (unsigned long)rxring[0], (unsigned long)tx[15]);
+        goto finish;
+    }
+    for (i = 1; i < 8; ++i) {
+        if (rxring[i] != 0xfeed0000u + i) {
+            printf("finite RX single: guard [%u] overwritten\n", i);
+            goto finish;
+        }
+    }
+    puts("Finite RX single destination PASS");
     result = 0;
 finish:
     if (armed_rx) pm_pio_dma_stop(0);
@@ -189,6 +256,7 @@ finish:
     pm_pio_on_dma_done(1, NULL);
     pm_pio_stop(pio, sm);
     pm_pio_clear(pio);
+    free(rxring_alloc);
     free(ring_alloc);
     free(tx);
     free(rx);

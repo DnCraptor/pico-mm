@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 17.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 18.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -665,8 +665,9 @@ here applies to the expanded RP2350 runtime.
 | 15 | `pio.h`: PIO CONFIGURE and SYNC through the existing BASIC hardware implementation; no duplicate driver |
 | 16 | `pio.h`: automatic safe-target probe (`pm_pio_idle`), BASIC-shared RP2350 PIO WRITEFIFO and SET BASE |
 | 17 | `pio.h`: continuous RX address-reload and TX ring/retrigger DMA on shared BASIC channels; automatic loopback tests |
+| 18 | `pio.h`: finite RX DMA with power-of-two destination window (`pm_pio_dma_rx_ring`), shared with BASIC |
 
-PIO/DMA notes for API v17:
+PIO/DMA notes for API v18:
 
 - `C/pm_pio_loopback_test.c` runs unchanged on firmware with this API on
   RP2040 and RP2350: no `TEST_PIO_BLOCK` or compile-time board selection.
@@ -684,6 +685,17 @@ PIO/DMA notes for API v17:
   `static` declarations to file scope (`pio_dma_rx_address` and
   `pio_dma_tx_address`), without increasing static RAM. This makes them
   available to the common DMA engine.
+- `pm_pio_dma_rx_ring(pio, sm, buffer, capacity_bytes, count, bits, window)`
+  is a **finite** RX DMA transfer of `count` samples into a wrapped
+  `window`-element destination. `window` must be a power of two (1..32768),
+  `window=1` always overwrites the first element, and values above 1 require
+  a buffer aligned to `window * bits / 8` bytes. The hardware ring
+  window is limited to 32768 bytes. The capacity must cover the
+  window, not the total transfer count. This is exactly BASIC `PIO DMA RX`
+  with a nonzero `nbr` and an explicit `size`; the same shared hardware path
+  is called by both. RX completion callback is delivered once.
+  `C/pm_pio_loopback_test.c` validates both a four-element window and a
+  single fixed destination, including canary words beyond the DMA window.
 - `pm_pio_dma_rx/tx()` remain one-shot. `pm_pio_dma_cyclic_rx()` repeatedly
   fills the same C-owned destination buffer (`count` elements per block).
   `pm_pio_dma_cyclic_tx(..., ring=0)` repeats TX from the beginning of the

@@ -63,7 +63,7 @@ void pm_pio_dma_cyclic_hw(int tx,int pio,int sm,void *buffer,
 /* BASIC finite RX with a size=1 fixed destination or power-of-two ring.
  * The DMA transfer itself has an explicit finite count. */
 void pm_pio_dma_finite_rx_hw(int pio,int sm,void *buffer,size_t capacity,
-                             uint32_t count,unsigned bits,uint32_t window);
+                             uint32_t count,unsigned bits,uint32_t window,int from_c);
 void pm_pio_dma_stop_hw(int tx);
 int pm_pio_dma_busy_hw(int tx);
 #endif

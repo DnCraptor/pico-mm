@@ -968,7 +968,7 @@ void MIPS16 cmd_pio(void)
                 if (s_nbr) {
                         pm_pio_dma_finite_rx_hw(pior, sm, a1int,
                                 (size_t)toarraysize * 8u, s_nbr,
-                                8u << dmasize, size);
+                                8u << dmasize, size, 0);
                 } else {
                         if (size == 1u)
                                 error("Continuous PIO DMA RX requires SIZE >= 2");

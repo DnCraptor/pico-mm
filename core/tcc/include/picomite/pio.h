@@ -46,6 +46,16 @@ void pm_pio_dma_rx(int pio, int sm, void *buffer,
                    size_t capacity_bytes, uint32_t count, unsigned bits);
 void pm_pio_dma_tx(int pio, int sm, const void *buffer,
                    size_t capacity_bytes, uint32_t count, unsigned bits);
+/* Finite RX with a destination window, matching BASIC PIO DMA RX with
+ * nonzero transfer count and SIZE. count = total received elements;
+ * window = power-of-two elements that may be overwritten (1..32768).
+ * For window>1 the hardware ring window in BYTES must also be <= 32768.
+ * window=1 repeatedly writes the first element. For window>1 the buffer
+ * must be aligned to window*(bits/8) bytes; capacity_bytes must cover that
+ * window (not necessarily count). The DMA completion callback is one-shot.
+ * Buffer must be a live C RUN allocation until DMA finishes or is stopped. */
+void pm_pio_dma_rx_ring(int pio,int sm,void *buffer,size_t capacity_bytes,
+                        uint32_t count,unsigned bits,uint32_t window);
 /* Continuous DMA replays the same C-owned buffer until pm_pio_dma_stop().
  * Count is elements per block, must be nonzero. RX and TX ring require
  * a power of two; TX address-reload accepts any count.
