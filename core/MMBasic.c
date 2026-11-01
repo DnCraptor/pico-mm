@@ -7087,6 +7087,11 @@ void MIPS16 error(char *msg, ...)
        path, which matters on the RP2350 builds where stack is tight. */
     char *p, *tp, tstr[STRINGSIZE];
     va_list ap;
+    /* LIST ALL #n etc: the message is for the console, never the printer or file, and an error skipped (ON ERROR
+       SKIP/IGNORE) that abandons the command ends its redirection too.  Only one skipped deeper down, inside a BASIC
+       the command runs (LIST PINS', which skips the pins it cannot read), leaves the command going on to #n. */
+    if (ConsoleRedirect && !(OptionErrorSkip && OptionErrorSkip <= 100000 && ExecDepth > ConsoleRedirectDepth))
+        ConsoleRedirect = 0;
     // an error part way through a flash write (tokenise() in SaveProgramToFlash,
     // say) would print with the interrupts off: USB stops and core 0 hangs
     if (irqs_off_pico)

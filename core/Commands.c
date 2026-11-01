@@ -223,246 +223,6 @@ int SaveNextData = 0;
 struct sa_data datastore[MAXRESTORE];
 int restorepointer = 0;
 uint64_t g_flag = 0;
-const uint8_t pinlist[] = {
-	// this is a Basic program to print out the status of all the pins
-	// Each line is preceded by T_NEWLINE (1) followed by the line skip
-	// byte (offset from this T_NEWLINE to the next T_NEWLINE / EOP).
-	1,
-	13,
-	158,
-	128,
-	241,
-#ifdef PICOMITEWEB
-	84,
-#else
-	81,
-#endif
-	41,
-	32,
-	204,
-	32,
-	205,
-	128,
-	0,
-	1,
-	17,
-	158,
-	128,
-	241,
-#ifdef PICOMITEWEB
-	85,
-#else
-	82,
-#endif
-	41,
-	141,
-	52,
-	48,
-	32,
-	204,
-	32,
-	206,
-	128,
-	55,
-	0,
-	1,
-	8,
-	132,
-	128,
-	95,
-	113,
-	37,
-	0,
-	1,
-	21,
-	153,
-	128,
-	95,
-	113,
-	37,
-	144,
-	48,
-	32,
-	205,
-	32,
-	240,
-	109,
-	97,
-	120,
-	32,
-	103,
-	112,
-	41,
-	0,
-	1,
-	62,
-	168,
-	128,
-	34,
-	71,
-	80,
-	34,
-	130,
-	187,
-	95,
-	113,
-	37,
-	41,
-	44,
-	32,
-	240,
-	112,
-	105,
-	110,
-	110,
-	111,
-	32,
-	34,
-	71,
-	80,
-	34,
-	130,
-	187,
-	95,
-	113,
-	37,
-	41,
-	41,
-	44,
-	240,
-	112,
-	105,
-	110,
-	32,
-	240,
-	112,
-	105,
-	110,
-	110,
-	111,
-	32,
-	34,
-	71,
-	80,
-	34,
-	130,
-	187,
-	95,
-	113,
-	37,
-	41,
-	41,
-	41,
-	34,
-	34,
-	0,
-	1,
-	30,
-	158,
-	128,
-	95,
-	113,
-	37,
-	32,
-	136,
-	32,
-	40,
-	241,
-#ifdef PICOMITEWEB
-	86,
-#else
-	83,
-#endif
-	41,
-	131,
-	51,
-	41,
-	144,
-	48,
-	32,
-	145,
-	32,
-	95,
-	113,
-	37,
-	139,
-	48,
-	32,
-	204,
-	0,
-	1,
-	33,
-	168,
-	128,
-	34,
-	80,
-	114,
-	101,
-	115,
-	115,
-	32,
-	97,
-	110,
-	121,
-	32,
-	107,
-	101,
-	121,
-	32,
-	116,
-	111,
-	32,
-	99,
-	111,
-	110,
-	116,
-	105,
-	110,
-	117,
-	101,
-	34,
-	59,
-	0,
-	1,
-	5,
-	133,
-	128,
-	0,
-	1,
-	11,
-	165,
-	128,
-	206,
-	32,
-	165,
-	139,
-	34,
-	34,
-	0,
-	1,
-	5,
-	168,
-	128,
-	0,
-	1,
-	5,
-	143,
-	128,
-	0,
-	1,
-	5,
-	166,
-	128,
-	0,
-	1,
-	8,
-	147,
-	128,
-	95,
-	113,
-	37,
-	0,
-	0};
 const uint8_t i2clist[] = {
 	// this is a Basic program to print out the I2C devices connected to the SYSTEM I2C pins
 	// Each line is preceded by T_NEWLINE (1) followed by the line skip
@@ -2178,6 +1938,34 @@ void MIPS16 ListFile(char *pp, int all)
 	fnbr = FindFreeFileNbr();
 	if (!BasicFileOpen(pp, fnbr, FA_READ))
 		return;
+#ifndef PICOMITEMIN
+	if (ConsoleRedirect)
+	{
+		/* LIST ALL #n, file$: the file as it is - every line, blank ones and tabs included, unwrapped - each line
+		   ended CR LF, for a printer or a copy in another file (the screen's word wrap is for the screen). */
+		int c, midline = 0;
+		while (!FileEOF(fnbr))
+		{
+			c = MMfgetc(fnbr);
+			if (c == '\r' || c < 0)
+				continue;
+			if (c == '\n')
+			{
+				MMPrintString("\r\n");
+				midline = 0;
+				routinechecks();
+				CheckAbort();
+				continue;
+			}
+			MMputchar((char)c, 0);
+			midline = 1;
+		}
+		if (midline)
+			MMPrintString("\r\n"); // a last line with no line end
+		FileClose(fnbr);
+		return;
+	}
+#endif
 	while (!FileEOF(fnbr))
 	{
 		ListCnt = file_display_line(fnbr, Option.Width, ListCnt, all);
@@ -2337,7 +2125,7 @@ void MIPS16 ListProgram(unsigned char *p, int all)
 			if (!(b[0] == '\'' && b[1] == '#'))
 			{
 				pp = b;
-				if (Option.continuation)
+				if (Option.continuation && !ConsoleRedirect) // a listing sent to #n is not wrapped
 				{
 					format_string(pp, Option.Width);
 					while (*pp)
@@ -2622,15 +2410,119 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode)
 	nextstmt = ProgMemory;
 }
 /** @endcond */
+/* LIST ALL #n, LIST PINS #n, OPTION LIST #n, LIBRARY LIST ALL #n, FLASH LIST #n: a first argument #n, as PRINT's,
+   sends the command's output to the open file or COM port n (PicoMite.c ConsoleRedirect).  Returns where the
+   arguments after it start, past its comma, or p unchanged when there is no #n.  The command clears ConsoleRedirect
+   when it ends; error() and do_end() clear it too. */
+unsigned char *OutputRedirect(unsigned char *p)
+{
+#ifndef PICOMITEMIN
+	int t = T_INT, fnbr;
+	MMFLOAT f;
+	long long int i64;
+	unsigned char *s;
+	skipspace(p);
+	if (*p != '#')
+		return p;
+	p = evaluate(p + 1, &f, &i64, &s, &t, false);
+	fnbr = (t & T_NBR) ? FloatToInt32(f) : (int)i64;
+	if (fnbr < 1 || fnbr > MAXOPENFILES)
+		StandardError(18);
+	if (FileTable[fnbr].com == 0)
+		StandardError(19);
+	skipspace(p);
+	if (*p == ',')
+	{
+		p++;
+		skipspace(p); // FILES works on the text that follows
+	}
+	else if (!(*p == 0 || *p == '\''))
+		SyntaxError();
+	ConsoleRedirect = fnbr;
+	ConsoleRedirectDepth = ExecDepth;
+#endif
+	return p;
+}
+/* MM.INFO(PINNO "GPn") for LIST PINS: the physical pin of GPn, the radio's and HDMI's reserved ones included */
+static int ListPinNo(int gp)
+{
+#if defined(PICOMITEWEB) || defined(PICOMITEBT) || defined(PICOMITEBTH) || defined(PICOMITEHDMIBTH)
+	if (gp == 23)
+		return 41;
+	if (gp == 24)
+		return 42;
+	if (gp == 25)
+		return 43;
+	if (gp == 29)
+		return 44;
+#endif
+#ifdef HDMI
+	if (gp >= 12 && gp <= 19)
+	{
+		static const unsigned char hdmipin[8] = {16, 17, 19, 20, 21, 22, 24, 25};
+		return hdmipin[gp - 12];
+	}
+#endif
+	return codemap(gp);
+}
+/* LIST PINS [#n]: each GP pin, its physical pin and its use, as MM.INFO(PIN) gives it.  This was a tokenised BASIC
+   program (If MM.DISPLAY Then CLS; If MM.WIDTH <= 40 Then FONT 7; a PRINT for each pin, with a "Press any key to
+   continue" every MM.HEIGHT - 3 lines) and prints the same; sent to #n it leaves the screen alone and is not paged. */
+static void ListPins(void)
+{
+	char s[STRINGSIZE];
+	int maxgp, lines;
+#ifdef rp2350
+	maxgp = (rp2350a ? 29 : 47); // MM.INFO(MAX GP)
+#else
+	maxgp = 29;
+#endif
+	if (!ConsoleRedirect)
+	{
+		if (Option.DISPLAY_CONSOLE)
+		{
+			unsigned char *save = cmdline;
+			cmdline = (unsigned char *)"";
+			cmd_cls();
+			cmdline = save;
+		}
+		if ((Option.DISPLAY_CONSOLE ? HRes / (short)(FontTable[gui_font >> 4][0] * (gui_font & 0b1111)) : Option.Width) <= 40)
+			SetFont(((7 - 1) << 4) | 1);
+	}
+	lines = (Option.DISPLAY_CONSOLE ? VRes / (short)(FontTable[gui_font >> 4][1] * (gui_font & 0b1111)) : Option.Height) - 3;
+	for (int gp = 0; gp <= maxgp; gp++)
+	{
+		int pin = ListPinNo(gp);
+		MMPrintString("GP");
+		PInt(gp);
+		MMputchar('\t', 0); // PRINT's comma
+		if (pin >= 0)
+			MMputchar(' ', 0); // and the space PRINT puts in front of a number
+		PInt(pin);
+		MMputchar('\t', 0);
+		PinStatusText(pin, s);
+		MMPrintString(s);
+		MMPrintString("\r\n");
+		if (!ConsoleRedirect && lines > 0 && gp % lines == 0 && gp != 0)
+		{
+			MMPrintString("Press any key to continue");
+			while (MMInkey() == -1)
+				CheckAbort();
+			MMPrintString("\r\n");
+		}
+		CheckAbort();
+	}
+}
 void MIPS16 cmd_list(void)
 {
 	unsigned char *p;
 	int i, j, k, m, step;
 	if ((p = checkstring(cmdline, (unsigned char *)"ALL")))
 	{
+		p = OutputRedirect(p); // LIST ALL #n [, file$]
 		if (!(*p == 0 || *p == '\''))
 		{
-			if (Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
+			if (!ConsoleRedirect && Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
 			{
 				ClearScreen(gui_bcolour);
 				CurrentX = 0;
@@ -2644,7 +2536,7 @@ void MIPS16 cmd_list(void)
 		}
 		else
 		{
-			if (Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
+			if (!ConsoleRedirect && Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
 			{
 				ClearScreen(gui_bcolour);
 				CurrentX = 0;
@@ -2653,6 +2545,7 @@ void MIPS16 cmd_list(void)
 			ListProgram(ProgMemory, true);
 			checkend(p);
 		}
+		ConsoleRedirect = 0;
 	}
 	else if ((p = checkstring(cmdline, (unsigned char *)"OPTIONS")))
 	{
@@ -2950,7 +2843,10 @@ void MIPS16 cmd_list(void)
 #endif
 	else if ((p = checkstring(cmdline, (unsigned char *)"PINS")))
 	{
-		CallExecuteProgram((char *)pinlist);
+		p = OutputRedirect(p); // LIST PINS #n
+		checkend(p);
+		ListPins();
+		ConsoleRedirect = 0;
 		return;
 	}
 	else if ((p = checkstring(cmdline, (unsigned char *)"SYSTEM I2C")))
@@ -4055,6 +3951,7 @@ void __not_in_flash_func(cmd_else)(void)
 }
 void do_end(bool ecmd)
 {
+	ConsoleRedirect = 0; // a Ctrl-C in LIST ALL #n etc: what follows is for the console
 #ifdef rp2350
 	// On runtime error termination, abort steppers to a safe state.
 	// Keeps the 100kHz IRQ running and preserves axis configuration.
@@ -5229,6 +5126,40 @@ static int NextNamesVar(unsigned char *xstart, unsigned char *vname, int vlen)
 // The NEXT that closes the FOR loop on the variable vname, searching from p
 // (the FOR's nextstmt).  With errmsg NULL it returns NULL where cmd_for
 // raises its error, so the compiler can ask too (core/Stream.c).
+// the first token tok (THEN, ELSE) from p outside quotes, or the zero that ends the element
+static unsigned char *IfFindToken(unsigned char *p, int tok)
+{
+	int q = 0;
+	for (; *p; p++)
+	{
+		if (*p == '"')
+			q = !q;
+		else if (!q && *p == (unsigned char)tok)
+			break;
+	}
+	return p;
+}
+
+/* The command right after the next THEN or ELSE of a single-line IF, searching its element from q (the IF token, or a
+   command this returned), or NULL at the element's end.  The tokeniser does not end an element at THEN or ELSE, so
+   GetNextCommand never stops at a command there: ForFindNext and DoFindLoop ask this for the FOR, DO or WHILE in
+   IF c THEN FOR ...: ...: NEXT, whose NEXT (or LOOP) they do see (issue 147). */
+static unsigned char *IfInlineCommand(unsigned char *q)
+{
+	unsigned char *t, *e;
+	if (commandtbl_at(q) != CMD_NOTOKEN)
+		q += sizeof(CommandToken); // a command token's bytes can have THEN's value
+	t = IfFindToken(q, tokenTHEN);
+	e = IfFindToken(q, tokenELSE);
+	if (e < t)
+		t = e; // each stops at the element's end
+	if (*t == 0)
+		return NULL;
+	t++;
+	skipspace(t);
+	return t;
+}
+
 unsigned char *ForFindNext(unsigned char *p, unsigned char *vname, int vlen, unsigned char *errmsg)
 {
 	int t = 1;
@@ -5242,6 +5173,12 @@ unsigned char *ForFindNext(unsigned char *p, unsigned char *vname, int vlen, uns
 
 		if (tkn == cmdFOR)
 			t++; // count the FOR
+		/* and a FOR right after a single-line IF's THEN or ELSE.  Not a NEXT there (IF c THEN NEXT i): that is a second
+		   way to the end of a loop whose own NEXT follows as a statement, and counting it would pair the wrong NEXT. */
+		if (tkn == cmdIF)
+			for (unsigned char *q = IfInlineCommand(p); q; q = IfInlineCommand(q))
+				if (commandtbl_at(q) == cmdFOR)
+					t++;
 
 		if (tkn == cmdNEXT)
 		{ // is it NEXT
@@ -5789,6 +5726,10 @@ unsigned char *DoFindLoop(unsigned char *p, CommandToken dotoken, unsigned char 
 		CommandToken tkn = commandtbl_at(p);
 		if (tkn == dotoken)
 			i++; // entered a nested DO or WHILE loop
+		if (tkn == cmdIF) // a DO (or WHILE) right after a single-line IF's THEN or ELSE (see IfInlineCommand)
+			for (unsigned char *q = IfInlineCommand(p); q; q = IfInlineCommand(q))
+				if (commandtbl_at(q) == dotoken)
+					i++;
 		if (tkn == cmdLOOP)
 			i--; // exited a nested loop
 		if (i == 0)

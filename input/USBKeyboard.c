@@ -2309,6 +2309,11 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t instance,
 					PIntH(touch_feature_buf[0]);
 					MMPrintString(",");
 					PIntH(touch_feature_buf[1]);
+					if (len >= 3)
+					{
+						MMPrintString(",");
+						PIntH(touch_feature_buf[2]);
+					}
 				}
 				PRet();
 			}
@@ -2322,8 +2327,24 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t instance,
 				/* Read-modify-write Input Mode: we just read the current
 				   [Device Mode, Device Identifier]; force Device Mode to 0x02
 				   (touchscreen) but keep the identifier the panel returned,
-				   then write it back (step 13). */
-				touch_feature_buf[0] = 0x02;
+				   then write it back (step 13). A report with an ID carries
+				   the ID as its first byte, [ID, Device Mode, Device Index],
+				   which is what Windows writes (21 02 00); writing 0x02 over
+				   the ID left a panel in mouse mode (a SiS 0457:0819 gave one
+				   contact). A reply that does not start with the ID, or a
+				   failed read (len 0), is not trusted: index 0, as Windows
+				   writes. (len is the length asked for; a short reply leaves
+				   the zeros put in before the read.) */
+				uint8_t rid = HID[i].touch_info.input_mode_report_id;
+				if (rid)
+				{
+					if (len < 3 || touch_feature_buf[0] != rid)
+						touch_feature_buf[2] = 0;
+					touch_feature_buf[0] = rid;
+					touch_feature_buf[1] = 0x02;
+				}
+				else
+					touch_feature_buf[0] = 0x02;
 				HID[i].touch_init_step = 13;
 			}
 			break;
@@ -2349,6 +2370,13 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
 				PInt(report_id);
 				MMPrintString(" len=");
 				PInt(len);
+				MMPrintString(" data=");
+				for (int k = 0; k < len && k < 3; k++)
+				{
+					if (k)
+						MMPrintString(",");
+					PIntH(touch_feature_buf[k]);
+				}
 				PRet();
 			}
 #endif
@@ -2519,9 +2547,11 @@ void hid_app_task(void)
 			/* Read the current Input Mode feature ([Device Mode, Device
 			   Identifier]) into the buffer; the GET completion forces
 			   mode=0x02 and advances to the write (step 13). */
+			touch_feature_buf[0] = touch_feature_buf[1] = touch_feature_buf[2] = 0; /* a short reply leaves index 0 */
 			if (tuh_hid_get_report(HID[i].Device_address, HID[i].Device_instance,
 								   HID[i].touch_info.input_mode_report_id,
-								   HID_REPORT_TYPE_FEATURE, touch_feature_buf, 2))
+								   HID_REPORT_TYPE_FEATURE, touch_feature_buf,
+								   HID[i].touch_info.input_mode_report_id ? 3 : 2))
 				HID[i].touch_init_step = 12; /* GET in-flight */
 		}
 		else if (HID[i].Device_type == USB_TOUCH && HID[i].touch_init_step == 13)
@@ -2530,7 +2560,8 @@ void hid_app_task(void)
 			   preserved by the GET completion). */
 			if (tuh_hid_set_report(HID[i].Device_address, HID[i].Device_instance,
 								   HID[i].touch_info.input_mode_report_id,
-								   HID_REPORT_TYPE_FEATURE, touch_feature_buf, 2))
+								   HID_REPORT_TYPE_FEATURE, touch_feature_buf,
+								   HID[i].touch_info.input_mode_report_id ? 3 : 2))
 				HID[i].touch_init_step = 11; /* SET in-flight */
 		}
 		else if (HID[i].Device_type == USB_TOUCH &&

@@ -1424,18 +1424,24 @@ void MIPS16 cmd_flash(void)
     {
         int j, i, k;
         int *pp;
+        p = OutputRedirect(p); // FLASH LIST #n [, n, ALL]
         getcsargs(&p, 3);
         if (argc)
         {
             int i = getint(argv[0], 1, MAXFLASHSLOTS);
             if (Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE && i == MAXFLASHSLOTS)
                 StandardErrorParam(25, MAXFLASHSLOTS);
+            if (ConsoleRedirect && argc == 1)
+                error("ALL needed with #n"); // the paged listing would print PRESS ANY KEY to #n and wait
             ProgMemory = (unsigned char *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
             if ((unsigned char)*ProgMemory != T_NEWLINE)
+            {
+                ConsoleRedirect = 0;
                 return;
+            }
             SymSetProgram(ProgMemory); // list the slot's names from its own symbol table
             SymSetLibrary(ProgMemory); // (a library's names are library symbols)
-            if (Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
+            if (!ConsoleRedirect && Option.DISPLAY_CONSOLE && (SPIREAD || Option.NoScroll))
             {
                 ClearScreen(gui_bcolour);
                 CurrentX = 0;
@@ -1506,6 +1512,7 @@ void MIPS16 cmd_flash(void)
                 MMPrintString(" in use: Library\r\n");
             }
         }
+        ConsoleRedirect = 0;
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"MODBUFF LOAD")))
     {
@@ -6911,26 +6918,71 @@ void getfullfilepath(char *p, char *q)
 }
 /*  @endcond */
 
+// FILES' line for one entry (ts and outbuff are its scratch space); returns 1 for a directory
+static int MIPS16 FilesEntry(fentry *fe, char *ts, char *outbuff, int *ListCnt)
+{
+    int dir = (fe->fn[0] == 'D');
+    memset(outbuff, 0, STRINGSIZE);
+    if (dir)
+        strcpy(outbuff, "   <DIR>  ");
+    else
+    {
+        IntToStrPad(ts, (fe->ftime >> 11) & 0x1F, '0', 2, 10);
+        ts[2] = ':';
+        IntToStrPad(ts + 3, (fe->ftime >> 5) & 0x3F, '0', 2, 10);
+        ts[5] = ' ';
+        IntToStrPad(ts + 6, fe->fdate & 0x1F, '0', 2, 10);
+        ts[8] = '-';
+        IntToStrPad(ts + 9, (fe->fdate >> 5) & 0xF, '0', 2, 10);
+        ts[11] = '-';
+        IntToStr(ts + 12, ((fe->fdate >> 9) & 0x7F) + 1980, 10);
+        ts[16] = ' ';
+        IntToStrPad(ts + 17, fe->fsize, ' ', 10, 10);
+        strcpy(outbuff, ts);
+        strcat(outbuff, "  ");
+    }
+    // the name is printed from the record, not appended to outbuff: littlefs allows 255 characters, more than fit after
+    // the date and size
+    char *part[2] = {outbuff, fe->fn + 1};
+    for (int k = 0; k < 2; k++)
+        for (char *pp = part[k]; *pp; pp++)
+        {
+            if (!ConsoleRedirect && MMCharPos >= Option.Width) // a line sent to #n is not wrapped
+                ListNewLine(ListCnt, 1);
+            MMputchar(*pp, 0);
+        }
+#ifndef USBKEYBOARD
+    // fflush(stdout);
+    tud_cdc_write_flush();
+#endif
+    ListNewLine(ListCnt, 1);
+    return dir;
+}
+
 void MIPS16 cmd_files(void)
 {
     int waste = 0, t = FatFSFileSystem + 1;
     unsigned char cmdbuffer[STRINGSIZE] = {0};
     unsigned char *cmdbuf = cmdbuffer;
-    strcpy((char *)cmdbuf, (char *)cmdline);
+    unsigned char *fp = OutputRedirect(cmdline);
+    // FILES #n lists each entry as it is read, in directory order. With nothing to sort it
+    // needs no file list, so neither the variables nor the open files (#n among them) are cleared
+    int stream = ConsoleRedirect;
+    strcpy((char *)cmdbuf, (char *)fp);
     if (*cmdbuf)
     {
-        t = drivecheck((char *)getFstring(cmdline), &waste);
+        t = drivecheck((char *)getFstring(fp), &waste);
         cmdbuf += waste;
         *cmdbuf = '"';
     }
     int oldfont = PromptFont;
-    if (!ProgramRunning())
+    if (!ProgramRunning() && !stream)
     {
         ClearVars(0, true);
         ClearRuntime(true);
     }
     SetFont(oldfont);
-    int i, c, dirs;
+    int i, c, dirs = 0;
     static int ListCnt = 2;
     char *p;
     int fcnt, sortorder = 0;
@@ -6977,6 +7029,8 @@ void MIPS16 cmd_files(void)
         }
         if (argc == 3)
         {
+            if (stream)
+                error("No sort order with #n");
             if (checkstring(argv[2], (unsigned char *)"NAME"))
                 sortorder = 0;
             else if (checkstring(argv[2], (unsigned char *)"TIME"))
@@ -6990,7 +7044,7 @@ void MIPS16 cmd_files(void)
             ;
         }
     }
-    if (CurrentLinePtr)
+    if (CurrentLinePtr && !stream)
     {
         CloseAudio(1);
         SaveContext();
@@ -7004,7 +7058,7 @@ void MIPS16 cmd_files(void)
         error((char *)FErrorMsg[20]); // setup the SD card
     FatFSFileSystem = t - 1;
     fullpath(q);
-    if (Option.DISPLAY_CONSOLE)
+    if (Option.DISPLAY_CONSOLE && !stream)
     {
         ClearScreen(gui_bcolour);
         CurrentX = 0;
@@ -7025,10 +7079,19 @@ void MIPS16 cmd_files(void)
     if (PSRAMsize)
         databuf_size = MAXFILES * 40; // ~80KB for PSRAM systems (generous average)
 #endif
-    databuf = GetMemory(databuf_size);
-    fptrs = GetMemory(sizeof(fentry *) * maxfiles);
-    char *dbcursor = databuf; // bump allocator cursor
-    char *dbend = databuf + databuf_size;
+    char *dbcursor, *dbend;
+    if (stream)
+    { // room for one record, used again for each entry (a temporary, so an error frees it too)
+        dbcursor = GetTempMemory(sizeof(fentry) + LFS_NAME_MAX + 5);
+        dbend = dbcursor + sizeof(fentry) + LFS_NAME_MAX + 5;
+    }
+    else
+    {
+        databuf = GetMemory(databuf_size);
+        fptrs = GetMemory(sizeof(fentry *) * maxfiles);
+        dbcursor = databuf; // bump allocator cursor
+        dbend = databuf + databuf_size;
+    }
     // add the file to the list, search for the next and keep looping until no more files
     if (FatFSFileSystem)
     {
@@ -7038,7 +7101,7 @@ void MIPS16 cmd_files(void)
             ProcessWeb(1);
 #endif
             ProcessBT();
-            if (fcnt >= maxfiles)
+            if (!stream && fcnt >= maxfiles)
             {
                 FreeMemorySafe((void **)&fptrs);
                 FreeMemorySafe((void **)&databuf);
@@ -7074,8 +7137,16 @@ void MIPS16 cmd_files(void)
                     fe->fsize = fnod.fsize;
                 }
                 memcpy(&fe->fn[1], fnod.fname, namelen + 1);
-                fptrs[fcnt] = fe;
-                dbcursor += entrysize;
+                if (stream)
+                {
+                    dirs += FilesEntry(fe, ts, outbuff, &ListCnt);
+                    CheckAbort();
+                }
+                else
+                {
+                    fptrs[fcnt] = fe;
+                    dbcursor += entrysize;
+                }
                 fcnt++;
             }
             FSerror = f_findnext(&djd, &fnod);
@@ -7098,7 +7169,7 @@ void MIPS16 cmd_files(void)
             int is_file = (lfs_info.type == LFS_TYPE_REG && pattern_matching(pp, lfs_info.name, 0, 0));
             if (is_dir || is_file)
             {
-                if (fcnt >= maxfiles)
+                if (!stream && fcnt >= maxfiles)
                 {
                     FreeMemorySafe((void **)&fptrs);
                     FreeMemorySafe((void **)&databuf);
@@ -7147,15 +7218,23 @@ void MIPS16 cmd_files(void)
                     }
                 }
                 memcpy(&fe->fn[1], lfs_info.name, namelen + 1);
-                fptrs[fcnt] = fe;
-                dbcursor += entrysize;
+                if (stream)
+                {
+                    dirs += FilesEntry(fe, ts, outbuff, &ListCnt);
+                    CheckAbort();
+                }
+                else
+                {
+                    fptrs[fcnt] = fe;
+                    dbcursor += entrysize;
+                }
                 fcnt++;
             }
         }
     }
     // Sort the pointer array using qsort
     files_sortorder = sortorder;
-    if (fcnt > 1)
+    if (fcnt > 1 && !stream)
     {
         switch (sortorder)
         {
@@ -7178,47 +7257,13 @@ void MIPS16 cmd_files(void)
     unsigned char noscroll = Option.NoScroll;
     if ((void *)ReadBuffer != (void *)DisplayNotSet && Option.DISPLAY_CONSOLE)
         Option.NoScroll = 0;
-    for (i = dirs = 0; i < fcnt; i++)
+    for (i = 0; !stream && i < fcnt; i++)
     {
-        memset(outbuff, 0, sizeof(outbuff));
 #ifdef PICOMITEWEB
         ProcessWeb(1);
 #endif
         ProcessBT();
-        if (fptrs[i]->fn[0] == 'D')
-        {
-            dirs++;
-            strcpy(outbuff, "   <DIR>  ");
-        }
-        else
-        {
-            IntToStrPad(ts, (fptrs[i]->ftime >> 11) & 0x1F, '0', 2, 10);
-            ts[2] = ':';
-            IntToStrPad(ts + 3, (fptrs[i]->ftime >> 5) & 0x3F, '0', 2, 10);
-            ts[5] = ' ';
-            IntToStrPad(ts + 6, fptrs[i]->fdate & 0x1F, '0', 2, 10);
-            ts[8] = '-';
-            IntToStrPad(ts + 9, (fptrs[i]->fdate >> 5) & 0xF, '0', 2, 10);
-            ts[11] = '-';
-            IntToStr(ts + 12, ((fptrs[i]->fdate >> 9) & 0x7F) + 1980, 10);
-            ts[16] = ' ';
-            IntToStrPad(ts + 17, fptrs[i]->fsize, ' ', 10, 10);
-            strcpy(outbuff, ts);
-            strcat(outbuff, "  ");
-        }
-        strcat(outbuff, fptrs[i]->fn + 1);
-        char *pp = outbuff;
-        while (*pp)
-        {
-            if (MMCharPos >= Option.Width)
-                ListNewLine(&ListCnt, 1);
-            MMputchar(*pp++, 0);
-        }
-#ifndef USBKEYBOARD
-        // fflush(stdout);
-        tud_cdc_write_flush();
-#endif
-        ListNewLine(&ListCnt, 1);
+        dirs += FilesEntry(fptrs[i], ts, outbuff, &ListCnt);
         // check if it is more than a screen full
         if (ListCnt >= Option.Height - overlap && i < fcnt)
         {
@@ -7299,7 +7344,8 @@ void MIPS16 cmd_files(void)
     FatFSFileSystem = FatFSFileSystemSave;
     Option.NoScroll = noscroll;
     PromptFont = oldfont;
-    if (CurrentLinePtr)
+    ConsoleRedirect = 0;
+    if (CurrentLinePtr && !stream)
         RestoreContext(false);
     return;
     //        longjmp(mark, 1);

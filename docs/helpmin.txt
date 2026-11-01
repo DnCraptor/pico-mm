@@ -2080,7 +2080,7 @@ Returns a particular field in a string with the fields separated by
 delimiters. Note that a space character cannot be used as a delimiter.
 
 ~FILES
-FILES [fspec$] [,sort]
+FILES [#nbr,] [fspec$] [,sort]
 
 ~FILL
 FILL x, y, fillcolour [,bordercolour]
@@ -2149,12 +2149,12 @@ FLASH ERASE ALL
 Erase all flash program locations.
 
 ~FLASH LIST
-FLASH LIST
+FLASH LIST [#nbr]
 
 Displays a list of all flash locations including the first line of the
 program.
 
-FLASH LIST n [,all]
+FLASH LIST [#nbr,] n [,all]
 
 List the program saved to slot n. Use ALL to list without page breaks.
 
@@ -3424,7 +3424,7 @@ and restored easily and distributed.
 ~LIBRARY LIST
 LIBRARY LIST
 or
-LIBRARY LIST ALL
+LIBRARY LIST ALL [#nbr]
 or
 
 LIBRARY LIST will list the contents of the library. Use ALL to list without
@@ -3510,7 +3510,7 @@ is an integer and will be zero if the substring cannot be found.
 ~LIST
 LIST [fname$]
 or
-LIST ALL [fname$]
+LIST ALL [#nbr,] [fname$]
 
 List a program on the console. LIST on its own will list the program with a
 pause at every screen full.
@@ -3528,9 +3528,11 @@ LIST FUNCTIONS
 Lists all valid commands or functions
 
 ~LIST PINS
-LIST PINS
+LIST PINS [#nbr]
 
-Lists the current status of all pins on the processor
+Lists the current status of all pins on the processor NOT PICOMITEMIN LIST
+PINS #nbr sends the list to the serial port or file opened as 'nbr', without
+clearing the screen or pausing at each screen full.
 
 ~LIST SYSTEM I2C
 LIST SYSTEM I2C
@@ -6034,7 +6036,7 @@ the legacy syntax and all drawing commands will accept colours in the range of
 0 to 7.
 
 ~OPTION LIST
-OPTION LIST
+OPTION LIST [#nbr]
 
 This will list the settings of any options that have been changed from their
 default setting and are the permanent type. OPTION LIST also shows the version

@@ -991,7 +991,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 			if (MMAbort)
 			{								   // allow the user to abort a hung serial port
 				com1Tx_tail = com1Tx_head = 0; // clear the buffer
-				longjmp(mark, 1);			   // and abort
+				CheckAbort();				   // and abort: do_end closes up, as for any Ctrl-C
 			}
 		int empty = uart_is_writable(uart0);
 		com1Tx_buf[com1Tx_head] = c;					  // add the char
@@ -1008,7 +1008,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 			if (MMAbort)
 			{								   // allow the user to abort a hung serial port
 				com2Tx_tail = com2Tx_head = 0; // clear the buffer
-				longjmp(mark, 1);			   // and abort
+				CheckAbort();				   // and abort: do_end closes up, as for any Ctrl-C
 			}
 		int empty = uart_is_writable(uart1);
 		com2Tx_buf[com2Tx_head] = c;					  // add the char
@@ -1030,7 +1030,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 			{
 				tuh_task(); // keep the USB stack running while we wait
 				if (MMAbort)
-					longjmp(mark, 1);
+					CheckAbort(); // do_end closes up, as for any Ctrl-C
 			}
 			tuh_cdc_write(idx, &c, 1);
 			tuh_cdc_write_flush(idx);
@@ -1045,7 +1045,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c)
 		{
 			ProcessBT(); // keep Bluetooth running while we wait
 			if (MMAbort)
-				longjmp(mark, 1);
+				CheckAbort(); // do_end closes up, as for any Ctrl-C
 		}
 	}
 #endif

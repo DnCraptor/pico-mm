@@ -261,8 +261,20 @@ void pm_gui_runtime_poll(void)
        Native C RUN/pm_pause() never enters that dispatcher, so GUI CLICK
        (and mouse/touch input) needs the same main-thread service here.
        Do not run the GUI engine while a popup drawing is deferred. */
-    if (Ctrl && !(DelayedDrawKeyboard || DelayedDrawFmtBox || DelayedDrawListbox || calibrate))
+    if (Ctrl) {
+        if (!(DelayedDrawKeyboard || DelayedDrawFmtBox || DelayedDrawListbox || calibrate))
+            ProcessTouch();
+        if (CheckGuiFlag)
+            CheckGui();
+    }
+#if defined(USBKEYBOARD) && defined(PICOMITEVGA)
+    else if (OSK_IsActive() && !calibrate)
         ProcessTouch();
+#endif
+#ifdef USBKEYBOARD
+    else if (usb_touch_present && !calibrate)
+        ProcessTouch();
+#endif
     if (!s || s->dispatching) return;
     s->dispatching = true;
     while (s->count && s->callback && quota--) {

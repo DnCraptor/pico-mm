@@ -189,6 +189,7 @@ uint_fast64_t gettimefromepoch(int *year, int *month, int *day, int *hour, int *
  * ============================================================================ */
 void OtherOptions(void);
 void printoptions(void);
+void PinStatusText(int pin, char *s); // MM.INFO(PIN n)'s text, as LIST PINS prints it
 void configure(unsigned char *p, bool noask);
 /* Typed backend for MM.INFO and the native C API (no BASIC evaluation). */
 int64_t MMInfoDiskSpace(int free_space);
