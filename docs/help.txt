@@ -3379,7 +3379,7 @@ r$ = FIELD$(s$, 2, ",", "'")
 will result in r$ = "boo, zoo".
 
 ~FILES
-FILES [fspec$] [,sort]
+FILES [#nbr,] [fspec$] [,sort]
 
 Lists files in any directories on the default Flash Filesystem or SD Card.
 'fspec$' (if specified) can contain a path and search wildcards in the
@@ -3391,6 +3391,10 @@ names starting and ending with X mydir/* Find all entries in directory mydir
 NB: putting wildcards in the pathname will result in an error 'sort' specifies
 the sort order as follows: size by ascending size  time by descending
 time/date name by file name (default if not specified) type by file extension
+NOT PICOMITEMIN FILES #nbr sends the listing to the serial port or file opened
+as 'nbr'.  The entries are then listed in the order they are stored in the
+directory, and 'sort' cannot be used.  At the command prompt FILES on its own
+clears the variables and closes any open files; FILES #nbr does neither.
 
 ~FILL
 FILL x, y, fillcolour [,bordercolour]
@@ -3477,14 +3481,16 @@ FLASH ERASE ALL
 Erase all flash program locations.
 
 ~FLASH LIST
-FLASH LIST
+FLASH LIST [#nbr]
 
 Displays a list of all flash locations including the first line of the
 program.
 
-FLASH LIST n [,all]
+FLASH LIST [#nbr,] n [,all]
 
 List the program saved to slot n.  Use ALL to list without page breaks.
+NOT PICOMITEMIN FLASH LIST #nbr and FLASH LIST #nbr, n, ALL send their list to
+the serial port or file opened as 'nbr'.
 
 ~FLASH LOAD
 FLASH LOAD n
@@ -6344,11 +6350,13 @@ versions.
 ~LIBRARY LIST
 LIBRARY LIST
 or
-LIBRARY LIST ALL
+LIBRARY LIST ALL [#nbr]
 or
 
 LIBRARY LIST will list the contents of the library. Use ALL to list without
 page confirmations.
+NOT PICOMITEMIN LIBRARY LIST ALL #nbr sends the listing to the serial port or
+file opened as 'nbr'.
 
 ~LIBRARY LOAD
 LIBRARY LOAD fname$ [, fname$ ...] [, O] [, RAM]
@@ -6487,7 +6495,7 @@ note that LGETBYTE indexes bytes according to OPTION BASE (see LGETBYTE).
 ~LIST
 LIST [fname$]
 or
-LIST ALL [fname$]
+LIST ALL [#nbr,] [fname$]
 
 List a program on the console.
 LIST on its own will list the program with a pause at every screen full.
@@ -6496,6 +6504,16 @@ transfer the program to a terminal emulator on a PC that has the ability to
 capture its input stream to a file.  I
 f the optional 'fname$' is specified then that file on the Flash Filesystem or
 SD Card will be listed.
+NOT PICOMITEMIN LIST ALL #nbr sends the listing to a serial communications
+port or a file opened for OUTPUT or APPEND as 'nbr' instead of the console,
+for example to a printer.  A program's long lines are not wrapped, a file is
+sent exactly as it is (every line, blank lines and tabs included, each line
+ending with a carriage return/newline pair) and nothing is shown on the
+screen.  For example:
+SETPIN GP1, GP0, COM1
+OPEN "COM1:9600" AS #1
+LIST ALL #1, "test.bas"
+CLOSE #1
 
 ~LIST COLLISIONS
 LIST COLLISIONS
@@ -6519,9 +6537,11 @@ LIST FUNCTIONS
 Lists all valid commands or functions
 
 ~LIST PINS
-LIST PINS
+LIST PINS [#nbr]
 
 Lists the current status of all pins on the processor
+NOT PICOMITEMIN LIST PINS #nbr sends the list to the serial port or file
+opened as 'nbr', without clearing the screen or pausing at each screen full.
 
 ~LIST SYSTEM I2C
 LIST SYSTEM I2C
@@ -10018,12 +10038,14 @@ the legacy syntax and all drawing commands will accept colours in the range of
   legacy commands.  This can be downloaded from  .
 
 ~OPTION LIST
-OPTION LIST
+OPTION LIST [#nbr]
 
 This will list the settings of any options that have been changed from their
 default setting and are the permanent type. OPTION LIST also shows the version
 number and which firmware is loaded.  This command must be run at the command
 prompt (not in a program).
+NOT PICOMITEMIN OPTION LIST #nbr sends the list to the serial port or file
+opened as 'nbr'.
 
 ~OPTION LOCAL KEYBOARD ON
 OPTION LOCAL KEYBOARD ON or OPTION LOCAL KEYBOARD OFF

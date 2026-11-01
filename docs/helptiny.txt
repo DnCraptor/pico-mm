@@ -1388,7 +1388,7 @@ EXP( number )
 FIELD$( string1, nbr, string2 [, string3] )
 
 ~FILES
-FILES [fspec$] [,sort]
+FILES [#nbr,] [fspec$] [,sort]
 
 ~FILL
 FILL x, y, fillcolour [,bordercolour]
@@ -1419,8 +1419,8 @@ FLASH ERASE n
 FLASH ERASE ALL
 
 ~FLASH LIST
-FLASH LIST
-FLASH LIST n [,all]
+FLASH LIST [#nbr]
+FLASH LIST [#nbr,] n [,all]
 
 ~FLASH LOAD
 FLASH LOAD n
@@ -2062,7 +2062,7 @@ or
 ~LIBRARY LIST
 LIBRARY LIST
 or
-LIBRARY LIST ALL
+LIBRARY LIST ALL [#nbr]
 or
 
 ~LIBRARY LOAD
@@ -2097,7 +2097,7 @@ LINSTR(array%(), search$ [,start] [,size]))
 ~LIST
 LIST [fname$]
 or
-LIST ALL [fname$]
+LIST ALL [#nbr,] [fname$]
 
 ~LIST COLLISIONS
 LIST COLLISIONS
@@ -2108,7 +2108,7 @@ or
 LIST FUNCTIONS
 
 ~LIST PINS
-LIST PINS
+LIST PINS [#nbr]
 
 ~LIST SYSTEM I2C
 LIST SYSTEM I2C
@@ -3615,7 +3615,7 @@ or
 OPTION LEGACY OFF
 
 ~OPTION LIST
-OPTION LIST
+OPTION LIST [#nbr]
 
 ~OPTION LOCAL KEYBOARD ON
 OPTION LOCAL KEYBOARD ON or OPTION LOCAL KEYBOARD OFF
