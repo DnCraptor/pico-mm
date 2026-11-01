@@ -5,6 +5,7 @@
 #include "Hardware_Includes.h"
 #include "core/pm_api.h"
 #include "core/pm_runtime.h"
+#include "core/pm_pio_shared.h"
 #include "core/tcc/include/picomite/input.h"
 #include "pico/time.h"
 #include <stdint.h>
@@ -14,7 +15,7 @@
 /* Resident code is fixed in flash LIBRARY. Its data must survive InitHeap(),
  * which clears the BASIC heap on RUN/END. The descriptor is allocated from
  * the separate newlib heap only when a resident is installed; no resident
- * state is reserved in SRAM by the linker. No resident IRQ/DMA ownership. */
+ * state is reserved in SRAM by the linker. No resident DMA ownership. */
 typedef void (*pm_resident_callback)(void *);
 typedef void (*pm_resident_gpio_callback)(int, unsigned, void *);
 typedef struct {
@@ -26,6 +27,9 @@ typedef struct {
     int gpio_pin;  /* PicoMite pin number; zero means no subscription. */
     int gpio_gp;   /* Physical GPIO number passed to the C callback. */
     unsigned gpio_edges; /* PM_GPIO_RISE / PM_GPIO_FALL mask. */
+    uint64_t pio_pins; /* Physical GPIOs, kept through ClearExternalIO(). */
+    unsigned char pio_owner; /* PIO block + 1, zero is unclaimed. */
+    bool pio_access; /* Temporary privilege while using shared PIO helpers. */
     bool busy;
 } pm_resident_descriptor;
 /* M2P2HDMI has no slack in the main RAM linker region. The single pointer
@@ -90,7 +94,25 @@ static void pm_resident_gpio_release(pm_resident_descriptor *r)
 
 int pm_resident_gpio_pin_owned(int pin)
 {
-    return pm_resident && pm_resident->fn && pm_resident->gpio_pin == pin;
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn) return 0;
+    return r->gpio_pin == pin ||
+           (r->pio_pins & (1ull << PinDef[pin].GPno)) != 0;
+}
+
+/* These checks also protect the BASIC PIO commands because they use the
+ * shared hardware helpers. The one exception is the assembler in Custom.c. */
+int pm_resident_pio_block_owned(int pio)
+{
+    return pm_resident && pm_resident->pio_owner == pio + 1;
+}
+int pm_resident_pio_access_allowed(int pio)
+{
+    return pm_resident_pio_block_owned(pio) && pm_resident->pio_access;
+}
+int pm_resident_pio_any_owned(void)
+{
+    return pm_resident && pm_resident->pio_owner != 0;
 }
 
 int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
@@ -140,6 +162,116 @@ void pm_resident_gpio_off(void)
     if (pm_resident) pm_resident_gpio_release(pm_resident);
 }
 
+/* Block-exclusive PIO ownership. DMA is deliberately not exposed here:
+ * ClearExternalIO() aborts shared DMA channels at each BASIC program reset.
+ * The CSUB may use synchronous hardware helpers; no persistent RAM pointer
+ * is passed to a PIO or DMA engine. */
+static void pm_resident_pio_release_hw(pm_resident_descriptor *r)
+{
+    unsigned pio, gp;
+    uint64_t pins;
+    if (!r->pio_owner) return;
+    pio = r->pio_owner - 1u;
+    r->pio_access = true;
+    pm_pio_clear_hw((int)pio); /* Disable all SMs before releasing GPIOs. */
+    r->pio_access = false;
+    r->pio_owner = 0;
+    pins = r->pio_pins;
+    r->pio_pins = 0;
+    for (gp = 0; gp < NUM_BANK0_GPIOS; ++gp) {
+        if (!(pins & (1ull << gp))) continue;
+        ExtCfg(codemap((int)gp), EXT_NOT_CONFIG, 0);
+    }
+}
+
+int pm_resident_pio_claim(int pio)
+{
+    pm_resident_descriptor *r = pm_resident;
+    int pin, cfg;
+    if (!r || !r->fn || r->busy || pm_runtime_is_running() ||
+        r->pio_owner || pio < 0 || pio >= PIOMAX ||
+        !pm_pio_available_hw(pio) || !pm_pio_idle_hw(pio)) return -1;
+    cfg = pio == 0 ? EXT_PIO0_OUT : EXT_PIO1_OUT;
+#ifdef rp2350
+    if (pio == 2) cfg = EXT_PIO2_OUT;
+#endif
+    /* A disabled SM can still own pins configured by BASIC. Refuse it. */
+    for (pin = 1; pin <= NBRPINS; ++pin)
+        if (!IsInvalidPin(pin) && ExtCurrentConfig[pin] == cfg) return -1;
+    r->pio_owner = (unsigned char)(pio + 1);
+    return 0;
+}
+void pm_resident_pio_release(void)
+{
+    if (pm_resident && !pm_runtime_is_running())
+        pm_resident_pio_release_hw(pm_resident);
+}
+int pm_resident_pio_pin(int gp)
+{
+    pm_resident_descriptor *r = pm_resident;
+    int pin, cfg, pio;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        gp < 0 || gp >= NUM_BANK0_GPIOS) return -1;
+#ifdef rp2350
+    if (rp2350a && gp > 29) return -1;
+#endif
+    pin = codemap(gp);
+    if (IsInvalidPin(pin) || !CheckPin(pin, CP_NOABORT) ||
+        ExtCurrentConfig[pin] != EXT_NOT_CONFIG) return -1;
+    pio = r->pio_owner - 1;
+    cfg = pio == 0 ? EXT_PIO0_OUT : EXT_PIO1_OUT;
+#ifdef rp2350
+    if (pio == 2) cfg = EXT_PIO2_OUT;
+#endif
+    ExtCfg(pin, cfg, 0);
+    r->pio_pins |= 1ull << gp;
+    return 0;
+}
+int pm_resident_pio_program(const uint16_t *words, unsigned count)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        !words || count == 0 || count > 32) return -1;
+    r->pio_access = true;
+    pm_pio_program_hw(r->pio_owner - 1, words, count);
+    r->pio_access = false;
+    return 0;
+}
+int pm_resident_pio_init_machine(int sm, uint32_t pinctrl,
+                                 uint32_t execctrl, uint32_t shiftctrl,
+                                 int start, unsigned clock_hz,
+                                 int sideout, int setout, int outout)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        sm < 0 || sm >= 4 || start < 0 || start > 31) return -1;
+    r->pio_access = true;
+    pm_pio_init_hw(r->pio_owner - 1, sm, pinctrl, execctrl, shiftctrl,
+                   start, (float)clock_hz, sideout, setout, outout);
+    r->pio_access = false;
+    return 0;
+}
+int pm_resident_pio_start(int sm)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        sm < 0 || sm >= 4) return -1;
+    r->pio_access = true;
+    pm_pio_start_hw(r->pio_owner - 1, sm);
+    r->pio_access = false;
+    return 0;
+}
+int pm_resident_pio_stop(int sm)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        sm < 0 || sm >= 4) return -1;
+    r->pio_access = true;
+    pm_pio_stop_hw(r->pio_owner - 1, sm);
+    r->pio_access = false;
+    return 0;
+}
+
 int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
 {
     pm_resident_descriptor *r = pm_resident;
@@ -152,7 +284,8 @@ int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
         if (!r) return -1;
         pm_resident = r;
     } else {
-        pm_resident_gpio_release(r); /* Restart must not leak old pin. */
+        pm_resident_pio_release_hw(r);
+        pm_resident_gpio_release(r); /* Restart must not leak old pins. */
     }
     memset(r, 0, sizeof(*r));
     r->period_us = interval_ms * 1000u;
@@ -168,6 +301,7 @@ void pm_resident_stop(void)
     /* The callback may unregister itself. Its state remains valid until
      * it returns, then pm_resident_service() releases the descriptor. */
     if (r->busy) return;
+    pm_resident_pio_release_hw(r);
     pm_resident_gpio_release(r);
     pm_resident = NULL;
     free(r);
@@ -221,6 +355,8 @@ void pm_resident_service(void)
 void pm_resident_unwind(void)
 {
     pm_resident_descriptor *r = pm_resident;
+    /* Hardware helper errors can longjmp over their privilege clear. */
+    if (r) r->pio_access = false;
     if (r && r->busy) {
         r->busy = false;
         pm_resident_stop();
@@ -546,6 +682,13 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_resident_state)
     PM_CORE_SYM(pm_resident_gpio_on_edge)
     PM_CORE_SYM(pm_resident_gpio_off)
+    PM_CORE_SYM(pm_resident_pio_claim)
+    PM_CORE_SYM(pm_resident_pio_release)
+    PM_CORE_SYM(pm_resident_pio_pin)
+    PM_CORE_SYM(pm_resident_pio_program)
+    PM_CORE_SYM(pm_resident_pio_init_machine)
+    PM_CORE_SYM(pm_resident_pio_start)
+    PM_CORE_SYM(pm_resident_pio_stop)
     PM_CORE_SYM(pm_cls)
     PM_CORE_SYM(pm_pixel)
     {"pm_line", (const void *)&pm_core_line},

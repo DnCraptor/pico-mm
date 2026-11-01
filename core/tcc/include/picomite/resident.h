@@ -1,4 +1,4 @@
-/* Cooperative flash-LIBRARY C CSUB resident service (API v24). */
+/* Cooperative flash-LIBRARY C CSUB resident service (API v26). */
 #ifndef _PICOMITE_RESIDENT_H
 #define _PICOMITE_RESIDENT_H
 #include <stdint.h>
@@ -27,6 +27,22 @@ int pm_resident_active(void);
 int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
     void (*callback)(int gp, unsigned events, void *state));
 void pm_resident_gpio_off(void);
+/* A PIO claim owns one *whole block* (all four SMs and instruction memory),
+ * never just an SM. No resident DMA: both channels are reset by BASIC RUN.
+ * Existing hardware must be idle. Claim alone does not change PIO memory.
+ * Explicit PROGRAM replaces instruction memory; stop/restart/erase clears
+ * the claimed PIO and releases all PIO GPIOs. No RUN-owned buffers survive.
+ * Calls return 0 on success and -1 when invalid/unavailable. */
+int pm_resident_pio_claim(int pio);
+void pm_resident_pio_release(void);
+int pm_resident_pio_pin(int gp); /* Configure/reserve GPIO for claimed PIO. */
+int pm_resident_pio_program(const uint16_t *words, unsigned count);
+int pm_resident_pio_init_machine(int sm, uint32_t pinctrl,
+                                 uint32_t execctrl, uint32_t shiftctrl,
+                                 int start, unsigned clock_hz,
+                                 int sideout, int setout, int outout);
+int pm_resident_pio_start(int sm);
+int pm_resident_pio_stop(int sm);
 /* 64 bytes allocated from the system heap on installation, not BASIC's
  * resettable heap. Survives RUN/END, zeroed on start, freed on stop/unload.
  * Returns NULL when no resident is installed. */

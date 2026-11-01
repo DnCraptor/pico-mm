@@ -1,6 +1,7 @@
 /* Hardware implementation shared by PicoMite BASIC PIO commands and C. */
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "core/pm_api.h"
 #include "core/pm_pio_shared.h"
 #include "hardware/dma.h"
 #include "hardware/structs/dma.h"
@@ -154,6 +155,9 @@ void pm_pio_unregister_c_handlers_hw(void)
 static PIO pm_pio_checked(int pior)
 {
     if (pior < 0 || pior >= PIOMAX) error("Invalid PIO");
+    if (pm_resident_pio_block_owned(pior) &&
+        !pm_resident_pio_access_allowed(pior))
+        error("PIO block owned by resident C");
     if (pior == 0 && !PIO0) StandardError(3);
     if (pior == 1 && !PIO1) StandardError(4);
 #ifdef rp2350

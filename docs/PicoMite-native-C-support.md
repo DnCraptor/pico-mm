@@ -658,7 +658,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 25.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 26.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -691,8 +691,9 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 23 | `gui.h`: direct `pm_touch`/`pm_click` state access, `pm_gui` commands, typed `CTRLVAL`, and RUN-scoped GUI callbacks; `PM_CAP_GUI` |
 | 24 | `resident.h`: one cooperative flash-LIBRARY CSUB service surviving BASIC `END`/`RUN`; fixed firmware-owned state and explicit stop; no resident IRQ/DMA ownership yet |
 | 25 | `resident.h`: one resident-owned GPIO input with latched rising/falling-edge callbacks, exclusive pin reservation, automatic release across library replacement |
+| 26 | `resident.h`: exclusive PIO block reservation, pin ownership, instruction loading, state-machine init/start/stop; no resident DMA yet |
 
-### Resident CSUB service (API v24-v25)
+### Resident CSUB service (API v24-v26)
 
 `#include <picomite/resident.h>` provides a **single cooperative service**
 installed by a CSUB in the flash `LIBRARY` (`pm_resident_start(callback, period_ms)`).
@@ -729,6 +730,28 @@ The pin is reserved against BASIC `SETPIN`, other C allocations, and
 service. Resident stop, replacement, abnormal callback exit, and flash
 LIBRARY erase all release the pin using ordinary PicoMite `ExtCfg()` cleanup.
 No new static SRAM buffer or hardware IRQ vector is allocated.
+
+API v26 adds `pm_resident_pio_claim(pio)` for one *exclusive PIO block*.
+It accepts only an available and idle block (SDK instruction allocator,
+enabled SMs, current FIFO callbacks and active shared DMA are checked).
+Inactive instruction words written by BASIC `PIO PROGRAM LINE` are not
+tracked by the SDK, so the caller must deliberately choose a block that
+can be taken over. Claim does not erase instruction memory. The resident
+may explicitly load a new program with `pm_resident_pio_program()`, initialise
+SMs through `pm_resident_pio_init_machine()`, and start/stop SMs through
+the matching APIs. `pm_resident_pio_pin(gp)` configures/reserves a GPIO
+for the owned PIO block and keeps it from BASIC's END/RUN pin reset.
+All four SMs and instruction memory are protected against BASIC and RUN C
+operations on the claimed block. `PIO ASSEMBLE`, `PIO CONFIGURE`, and
+`PIO SYNC` are also guarded (SYNC is refused while any resident PIO is
+claimed because it can change neighbouring blocks).
+`pm_resident_pio_release()`, resident stop/restart, and flash LIBRARY
+replacement disable all claimed SMs, clear PIO instructions, then release
+the reserved pins. This release is intentionally destructive to the claimed
+block only. The resident descriptor is still the only persistent allocation.
+PIO DMA is **not** supported in v26: `ClearExternalIO()` aborts the shared
+DMA channels on every BASIC reset, so DMA needs separate lifetime/ownership
+protection before it can safely remain active after END/RUN.
 
 Build `C/pm_resident_probe.c` as soft-float ARMv6-M ET_REL to
 `B:/pm_resident_probe.elf`, then copy `Bas/pm_resident_probe.bas`,
@@ -782,7 +805,7 @@ are dropped. On C RUN end or `pm_gui_on_event(NULL)` the subscription and
 queue are discarded, without resetting BASIC's GUI controls or interrupt
 vectors. Registration requires an active `.c`/`.elf` RUN with GUICONTROLS;
 it is not available to external CSUBs. GUI creation and CTRLVAL mutation
-are likewise not exported to CSUBs. `PM_API_VERSION` is 25.
+are likewise not exported to CSUBs. `PM_API_VERSION` is 26.
 
 Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
 fill `state.size = sizeof state` first; returns 1 for a supported controller,

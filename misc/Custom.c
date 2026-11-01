@@ -88,6 +88,7 @@ they may be changed and you would then need to re insert your changes in a new r
 #include "pico/stdlib.h"
 #include "hardware/irq.h"
 #include "hardware/claim.h"
+#include "core/pm_api.h"
 #include "core/pm_pio_shared.h"
 #define CLKMIN ((Option.CPU_Speed * 125) >> 13)
 #define CLKMAX (Option.CPU_Speed * 1000)
@@ -363,6 +364,9 @@ void startPIO(PIO pio, int sm)
 }
 void syncPIO(int pio, int my, int prev, int next)
 {
+        /* SYNC can also restart neighbouring PIO blocks. Block it while a
+         * resident owns any block, including indirect PREV/NEXT targets. */
+        if (pm_resident_pio_any_owned()) error("PIO SYNC blocked by resident C");
         uint32_t mask = (my << 8); // define the statemachines to be synched in the current PIO
         if (prev)
         {
@@ -1243,6 +1247,7 @@ void MIPS16 cmd_pio(void)
                         SyntaxError();
                 ;
                 int pior = getint(argv[0], 0, PIOMAX - 1);
+                if (pm_resident_pio_block_owned(pior)) error("PIO block owned by resident C");
                 if (PIO0 == false && pior == 0)
                         StandardError(3);
                 if (PIO1 == false && pior == 1)
@@ -2434,6 +2439,7 @@ void MIPS16 cmd_pio(void)
                     (joinrxfifo && (joinrxfifoget || joinrxfifoput)))
                         error("Invalid FIFO configuration");
 #endif
+                if (pm_resident_pio_block_owned(pior)) error("PIO block owned by resident C");
                 configurePIO(pio, sm, clock,
                              startaddress, base,
                              sidesetbase, sidesetno, sidesetout, setbase, setno, setout,
