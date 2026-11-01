@@ -16,7 +16,7 @@
 #include <setjmp.h>
 #include "pico/time.h"
 
-#define PM_RUNTIME_VERSION 18u
+#define PM_RUNTIME_VERSION 19u
 
 typedef union pm_runtime_block {
     struct {
@@ -265,7 +265,8 @@ bool pm_runtime_csub_forbidden(const char *name)
         "pm_pio_dma_rx", "pm_pio_dma_tx", "pm_pio_dma_busy",
         "pm_pio_dma_cyclic_rx", "pm_pio_dma_cyclic_tx", "pm_pio_dma_rx_ring",
         "pm_pio_dma_stop", "pm_pio_program", "pm_pio_program_line",
-        "pm_pio_clear", "pm_pio_flevel", "pm_pio_dma_pointer",
+        "pm_pio_clear", "pm_pio_flevel", "pm_pio_fstat",
+        "pm_pio_fdebug", "pm_pio_readfifo", "pm_pio_dma_pointer",
         "pm_pio_on_fifo", "pm_pio_on_dma_done", "pm_pio_poll",
         "pm_pio_configure", "pm_pio_sync", "pm_pio_idle",
         "pm_pio_writefifo", "pm_pio_set_base", NULL

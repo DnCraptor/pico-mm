@@ -639,7 +639,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 18.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 19.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The RP2040 common API
@@ -666,8 +666,18 @@ here applies to the expanded RP2350 runtime.
 | 16 | `pio.h`: automatic safe-target probe (`pm_pio_idle`), BASIC-shared RP2350 PIO WRITEFIFO and SET BASE |
 | 17 | `pio.h`: continuous RX address-reload and TX ring/retrigger DMA on shared BASIC channels; automatic loopback tests |
 | 18 | `pio.h`: finite RX DMA with power-of-two destination window (`pm_pio_dma_rx_ring`), shared with BASIC |
+| 19 | `pio.h`: BASIC-shared PIO(FSTAT), PIO(FDEBUG) and RP2350 PIO(READFIFO) hardware accessors |
 
-PIO/DMA notes for API v18:
+PIO/DMA notes for API v19:
+
+- `pm_pio_fstat()` and `pm_pio_fdebug()` read raw PIO status/debug registers;
+  BASIC `PIO(FSTAT)` and `PIO(FDEBUG)` now call the same hardware accessors.
+  The loopback test checks FSTAT's RXEMPTY status after consuming its test
+  word, and prints the raw FDEBUG value for diagnostics. On RP2350,
+  `pm_pio_readfifo(pio,sm,fifo)` and BASIC `PIO(READFIFO)` share the
+  RX PUT/GET FIFO read. The read consumes a FIFO word; the automatic test
+  does not invoke it because the FIFO must first be configured appropriately.
+  No extra RAM is allocated for these registers.
 
 - `C/pm_pio_loopback_test.c` runs unchanged on firmware with this API on
   RP2040 and RP2350: no `TEST_PIO_BLOCK` or compile-time board selection.

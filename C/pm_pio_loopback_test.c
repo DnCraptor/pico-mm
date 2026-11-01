@@ -60,6 +60,15 @@ int main(void)
         printf("FIFO failed: events=%d got=%08lx\n", rx_events, (unsigned long)got);
         goto finish;
     }
+    /* FSTAT RXEMPTY[n] (RP2040/RP2350: bit 8+n) must agree with
+     * the empty RX FIFO following the single-word loopback test. */
+    if (!(pm_pio_fstat(pio) & (1u << (8 + sm))) ||
+        pm_pio_flevel(pio,sm,0) != 0) {
+        puts("PIO FSTAT: RXEMPTY does not match empty FIFO");
+        goto finish;
+    }
+    printf("PIO FSTAT/FDEBUG PASS (FDEBUG=%08lx)\n",
+           (unsigned long)pm_pio_fdebug(pio));
     puts("FIFO loopback PASS");
     tx = (uint32_t *)malloc(16 * sizeof(uint32_t));
     rx = (uint32_t *)malloc(16 * sizeof(uint32_t));

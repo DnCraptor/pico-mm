@@ -385,6 +385,25 @@ uint32_t pm_pio_flevel_hw(int pior, int sm, int tx)
     return (value >> (8 * sm + (tx ? 0 : 4))) & 0xfu;
 }
 
+/* FSTAT/FDEBUG and RP2350 RX FIFO PUT/GET are also used by BASIC's
+ * PIO(...) functions. Read the hardware registers; no shadow state. */
+uint32_t pm_pio_fstat_hw(int pior)
+{ return pm_pio_checked(pior)->fstat; }
+uint32_t pm_pio_fdebug_hw(int pior)
+{ return pm_pio_checked(pior)->fdebug; }
+uint32_t pm_pio_readfifo_hw(int pior, int sm, int fifo)
+{
+#ifdef rp2350
+    PIO pio = pm_pio_sm_checked(pior, sm);
+    if (fifo < 0 || fifo > 3) error("Invalid PIO RX FIFO index");
+    return pio->rxf_putget[sm][fifo];
+#else
+    (void)pior; (void)sm; (void)fifo;
+    error("PIO READFIFO requires RP2350");
+    return 0;
+#endif
+}
+
 /* BASIC and C use the same FIFO event rules. TX events are generated
  * on a transition from full to not-full (but not when empty). */
 int pm_pio_fifo_event_hw(int pior, int sm, int tx, uint8_t *last)

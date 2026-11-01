@@ -173,6 +173,25 @@ uint32_t pm_pio_flevel(int pio, int sm, int tx)
     return args.level;
 }
 
+static void pm_pio_status_do(void *arg)
+{
+    struct {int pio, sm, fifo, kind; uint32_t value;} *a = arg;
+    pm_pio_require_run();
+    if (a->kind == 0) a->value = pm_pio_fstat_hw(a->pio);
+    else if (a->kind == 1) a->value = pm_pio_fdebug_hw(a->pio);
+    else a->value = pm_pio_readfifo_hw(a->pio, a->sm, a->fifo);
+}
+static uint32_t pm_pio_status(int pio, int sm, int fifo, int kind)
+{
+    struct {int pio, sm, fifo, kind; uint32_t value;} a={pio,sm,fifo,kind,0};
+    pm_core_call(pm_pio_status_do,&a);
+    return a.value;
+}
+uint32_t pm_pio_fstat(int pio) { return pm_pio_status(pio,0,0,0); }
+uint32_t pm_pio_fdebug(int pio) { return pm_pio_status(pio,0,0,1); }
+uint32_t pm_pio_readfifo(int pio,int sm,int fifo)
+{ return pm_pio_status(pio,sm,fifo,2); }
+
 static void pm_pio_configure_do(void *p)
 {
     struct {int pio,sm; const pm_pio_config *config;} *a = p;
@@ -397,6 +416,9 @@ static const pm_pio_symbol pm_pio_syms[]={
     PM_PIO_SYM(pm_pio_program_line)
     PM_PIO_SYM(pm_pio_clear)
     PM_PIO_SYM(pm_pio_flevel)
+    PM_PIO_SYM(pm_pio_fstat)
+    PM_PIO_SYM(pm_pio_fdebug)
+    PM_PIO_SYM(pm_pio_readfifo)
     PM_PIO_SYM(pm_pio_configure)
     PM_PIO_SYM(pm_pio_sync)
     PM_PIO_SYM(pm_pio_dma_rx)

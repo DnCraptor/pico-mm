@@ -2609,18 +2609,7 @@ void fun_pio(void)
         {
                 getcsargs(&tp, 1);
                 int pior = getint(argv[0], 0, PIOMAX - 1);
-                if (PIO0 == false && pior == 0)
-                        StandardError(3);
-                if (PIO1 == false && pior == 1)
-                        StandardError(4);
-#ifdef rp2350
-                if (PIO2 == false && pior == 2)
-                        StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
-#endif
-                iret = pio->fstat; // jmp pin
+                iret = pm_pio_fstat_hw(pior);
                 targ = T_INT;
                 return;
         }
@@ -2630,16 +2619,9 @@ void fun_pio(void)
         {
                 getcsargs(&tp, 5);
                 int pior = getint(argv[0], 0, PIOMAX - 1);
-                if (PIO0 == false && pior == 0)
-                        StandardError(3);
-                if (PIO1 == false && pior == 1)
-                        StandardError(4);
-                if (PIO2 == false && pior == 2)
-                        StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
                 int sm = getint(argv[2], 0, 3);
                 int fifo = getint(argv[4], 0, 3);
-                iret = pio->rxf_putget[sm][fifo]; // jmp pin
+                iret = pm_pio_readfifo_hw(pior, sm, fifo);
                 targ = T_INT;
                 return;
         }
@@ -2649,18 +2631,7 @@ void fun_pio(void)
         {
                 getcsargs(&tp, 1);
                 int pior = getint(argv[0], 0, PIOMAX - 1);
-                if (PIO0 == false && pior == 0)
-                        StandardError(3);
-                if (PIO1 == false && pior == 1)
-                        StandardError(4);
-#ifdef rp2350
-                if (PIO2 == false && pior == 2)
-                        StandardError(5);
-                PIO pio = (pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2));
-#else
-                PIO pio = (pior == 0 ? pio0 : pio1);
-#endif
-                iret = pio->fdebug; // jmp pin
+                iret = pm_pio_fdebug_hw(pior);
                 targ = T_INT;
                 return;
         }

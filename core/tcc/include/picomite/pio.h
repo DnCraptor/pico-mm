@@ -38,6 +38,14 @@ void pm_pio_clear(int pio);
 /* sm = -1 returns raw FLEVEL register; otherwise return the selected
  * FIFO occupancy (0..15), where tx=1 selects TX and tx=0 selects RX. */
 uint32_t pm_pio_flevel(int pio, int sm, int tx);
+/* Raw PIO(FSTAT) and PIO(FDEBUG) values. Reads have no write side effects;
+ * decode using RP2040/RP2350 PIO register definitions. */
+uint32_t pm_pio_fstat(int pio);
+uint32_t pm_pio_fdebug(int pio);
+/* RP2350 PIO(READFIFO): read one RX PUT/GET FIFO slot (SM 0..3, FIFO 0..3).
+ * Use only with the appropriate RP2350 FIFO configuration; this is a
+ * consuming read, not an occupancy query. Unsupported on RP2040. */
+uint32_t pm_pio_readfifo(int pio, int sm, int fifo);
 
 /* One-shot DMA from/to a PIO FIFO. Buffer MUST be in a live malloc/pm_alloc
  * block of the current C run and remain there until the transfer ends.

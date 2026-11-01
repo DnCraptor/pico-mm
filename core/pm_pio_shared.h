@@ -30,6 +30,9 @@ void pm_pio_program_hw(int pio, const uint16_t *words, size_t count);
 void pm_pio_program_line_hw(int pio, int slot, uint16_t instruction);
 void pm_pio_clear_hw(int pio);
 uint32_t pm_pio_flevel_hw(int pio, int sm, int tx);
+uint32_t pm_pio_fstat_hw(int pio);
+uint32_t pm_pio_fdebug_hw(int pio);
+uint32_t pm_pio_readfifo_hw(int pio, int sm, int fifo);
 
 /* DMA transfer size in bits: 8, 16 or 32. count is number of samples.
  * Caller retains the buffer while DMA is active. 1 = TX, 0 = RX. */
