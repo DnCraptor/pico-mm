@@ -6501,9 +6501,9 @@ List a program on the console.
 LIST on its own will list the program with a pause at every screen full.
 LIST ALL will list the program without pauses.  This is useful if you wish to
 transfer the program to a terminal emulator on a PC that has the ability to
-capture its input stream to a file.  I
-f the optional 'fname$' is specified then that file on the Flash Filesystem or
-SD Card will be listed.
+capture its input stream to a file.
+If the optional 'fname$' is specified then that file on the Flash Filesystem
+or SD Card will be listed.
 NOT PICOMITEMIN LIST ALL #nbr sends the listing to a serial communications
 port or a file opened for OUTPUT or APPEND as 'nbr' instead of the console,
 for example to a printer.  A program's long lines are not wrapped, a file is
