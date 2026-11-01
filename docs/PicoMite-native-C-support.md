@@ -14,9 +14,9 @@ The code produced by TinyCC is native Cortex-M33 code. It runs from RAM
 and calls the firmware for its C library, console, files, display and pins.
 
 Precompiled ELF32/ARM relocatable objects can also run on RP2040 and RP2350
-without an onboard compiler. Both now export 15 named `pm_*` services from
-`core/pm_api.c` as well as `__picomite_calltable`. This is **not** the full
-TinyCC C runtime on RP2040. See [ELF objects](#run-file--args-for-elf-files).
+without an onboard compiler. Both export the common named `pm_*` API and
+compiler-independent C runtime services as well as `__picomite_calltable`.
+See [ELF objects](#run-file--args-for-elf-files).
 
 > **Limitations**
 >
@@ -639,12 +639,11 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 20.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 22.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
-that lacks a function reports `undefined symbol`. The RP2040 common API
-currently does **not** export `pm_api_version()`; the version check described
-here applies to the expanded RP2350 runtime.
+that lacks a function reports `undefined symbol`. The common runtime exports
+`pm_api_version()` on both RP2040 and RP2350.
 
 | Version | Added |
 |---|---|
@@ -669,6 +668,48 @@ here applies to the expanded RP2350 runtime.
 | 19 | `pio.h`: BASIC-shared PIO(FSTAT), PIO(FDEBUG) and RP2350 PIO(READFIFO) hardware accessors |
 | 20 | `pio.h`: `pm_pio_assemble(pio,line)` C wrapper for the BASIC PIO assembler (directives, labels and instruction parsing) |
 | 21 | `input.h`: C GPIO edge subscriptions through BASIC's `inttbl[]`, `IntPinArm/Disarm` and delayed event scan |
+| 22 | `input.h`: gamepad state snapshots and RUN-scoped C button-change callbacks using BASIC's event latch |
+
+Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
+fill `state.size = sizeof state` first; returns 1 for a supported controller,
+0 when no gamepad is present, or -1 for a missing/undersized output buffer.
+The snapshot contains type (PS4=128, PS3=129, generic=130, Xbox=131,
+Switch Pro=135, BLE HID=0x4254), buttons, hat, six axes/triggers, motion sensors and USB
+VID/PID where available. Unknown/unavailable fields are zero. Gamepads
+are decoded by the existing PicoMite input drivers; C does not parse HID.
+
+`pm_gamepad_on_change(channel,mask,callback)` uses BASIC's `nunfoundc[]`
+change latch. The USB gamepad decoders OR the C mask with BASIC's existing
+`nunstruct[].x1` mask; C does not modify `x1`, which can also be used by a
+mouse. BLE HID reports use the existing change latch, with button-delta
+filtering in C so axis-only updates do not generate C callbacks. BLE
+presence is gated by the host connection and parsed gamepad descriptor,
+so a stale report left by a disconnected BLE device is not reported as live.
+The callback receives `(channel,buttons)` at a normal C API/poll boundary,
+not in IRQ context. Events can coalesce; the callback sees the latest buttons,
+not every intervening report. The button mask must be 1..65535; only one
+owner (BASIC or C) may subscribe to a given HID channel. BASIC's MOUSE and
+GAMEPAD INTERRUPT commands cannot replace a C-owned subscription. C does
+not modify BASIC's interrupt handler pointer. Pass NULL to unsubscribe;
+C-owned callbacks and pending events are cleared before the RUN image is
+released, including error/CTRL-C exits. Use `pm_gamepad_poll()` in long loops.
+Do not call the subscription/poll functions from CSUB. An absent controller
+can be subscribed before connection, but the callback only reports button
+changes, not device connect/disconnect or analog-axis changes. On BLE-only
+builds the gamepad input is channel 3. Firmware without USB/BLE HID rejects
+subscriptions; the state getter returns absent.
+`pm_gamepad_get()` takes one snapshot per call, not an atomic USB HID report
+stream. The caller must initialize `pm_gamepad_state.size` to the size of
+its struct. This size-prefixed ABI permits older clients to read the known
+prefix if the structure grows. The return values are 1 (recognized gamepad),
+0 (absent), and -1 (invalid output pointer or size). Missing fields are zero.
+The `hat` field is meaningful only when the controller reports a hat switch;
+USB VID/PID values are zero when unavailable. BASIC and C use the same decoded
+state and button-change latch, but their interrupt handlers are mutually
+exclusive on a channel. NULL removes only the C-owned subscription. Calls and
+callbacks run in the C program context, not in a hardware IRQ, and C-owned
+subscriptions end with RUN. They must not be used by CSUB.
+See `C/pm_gamepad_test.c` for a smoke test.
 
 GPIO edge subscriptions (API v21):
 

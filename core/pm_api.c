@@ -5,6 +5,7 @@
 #include "Hardware_Includes.h"
 #include "core/pm_api.h"
 #include "core/pm_runtime.h"
+#include "core/tcc/include/picomite/input.h"
 #include "pico/time.h"
 #include <stdint.h>
 #include <string.h>
@@ -95,6 +96,177 @@ void pm_gpio_on_edge(int gp,int edge,int pull,void (*fn)(int,int))
 }
 void pm_gpio_poll(void) { pm_core_call(NULL,NULL); }
 
+/* USB/BLE gamepads already decode into BASIC's nunstruct[1..4]. Reuse
+ * nunfoundc[] without altering BASIC's x1 mask or nunInterruptc[] address.
+ * Never pass a C function pointer to the BASIC dispatcher. */
+typedef void (*pm_gamepad_callback)(int, unsigned);
+static pm_gamepad_callback pm_c_gamepad_cb[5];
+static unsigned pm_c_gamepad_owned;
+static unsigned pm_c_gamepad_masks[5], pm_c_gamepad_last[5];
+static bool pm_c_gamepad_polling;
+
+static bool pm_gamepad_valid_type(unsigned type)
+{
+    return type == PM_GAMEPAD_PS4 || type == PM_GAMEPAD_PS3 ||
+           type == PM_GAMEPAD_GENERIC || type == PM_GAMEPAD_XBOX ||
+           type == PM_GAMEPAD_SWITCHPRO || type == PM_GAMEPAD_BLE;
+}
+#if defined(PICOMITEBTH) || defined(PICOMITEHDMIBTH)
+extern bool bt_keyboard_has_gamepad(void);
+#endif
+static bool pm_gamepad_live_type(unsigned type)
+{
+    if (!pm_gamepad_valid_type(type)) return false;
+#if defined(PICOMITEBTH) || defined(PICOMITEHDMIBTH)
+    if (type == PM_GAMEPAD_BLE && !bt_keyboard_has_gamepad()) return false;
+#endif
+    return true;
+}
+
+int pm_gamepad_c_owns(int channel)
+{
+    return channel >= 1 && channel <= 4 &&
+           (pm_c_gamepad_owned & (1u << channel)) != 0;
+}
+/* Called only by the existing USB HID gamepad report decoders. BASIC
+ * keeps its own x1 change mask; these are ORed for event detection. */
+unsigned pm_gamepad_c_mask(int channel)
+{
+    return pm_gamepad_c_owns(channel) ? pm_c_gamepad_masks[channel] : 0;
+}
+void pm_gamepad_runtime_begin(void)
+{
+    memset(pm_c_gamepad_cb, 0, sizeof(pm_c_gamepad_cb));
+    memset(pm_c_gamepad_masks, 0, sizeof(pm_c_gamepad_masks));
+    memset(pm_c_gamepad_last, 0, sizeof(pm_c_gamepad_last));
+    pm_c_gamepad_owned = 0;
+    pm_c_gamepad_polling = false;
+}
+void pm_gamepad_runtime_end(void)
+{
+    for (int n = 1; n <= 4; ++n) {
+        if (!pm_gamepad_c_owns(n)) continue;
+        pm_c_gamepad_cb[n] = NULL;
+        pm_c_gamepad_masks[n] = 0;
+        nunfoundc[n] = false;
+    }
+    pm_c_gamepad_owned = 0;
+    pm_c_gamepad_polling = false;
+}
+void pm_gamepad_runtime_poll(void)
+{
+    if (!pm_runtime_is_running() || pm_c_gamepad_polling ||
+        !pm_c_gamepad_owned) return;
+    pm_c_gamepad_polling = true;
+    for (int n = 1; n <= 4; ++n) {
+        if (!pm_gamepad_c_owns(n) || !nunfoundc[n]) continue;
+        nunfoundc[n] = false;
+        pm_gamepad_callback cb = pm_c_gamepad_cb[n];
+        unsigned buttons = nunstruct[n].x0;
+        unsigned change = (buttons ^ pm_c_gamepad_last[n]) & pm_c_gamepad_masks[n];
+        pm_c_gamepad_last[n] = buttons;
+        /* BLE also sets this BASIC latch for axis movement. Mouse and
+         * other HID channels can set it too; only button changes on a
+         * recognised gamepad are delivered to the C callback. */
+        if (cb && change && pm_gamepad_live_type((unsigned)nunstruct[n].type))
+            cb(n, buttons);
+    }
+    pm_c_gamepad_polling = false;
+}
+
+static void pm_gamepad_get_do(void *arg)
+{
+    struct {int channel, result; pm_gamepad_state *out;} *a = arg;
+    pm_gamepad_state value = {0};
+    unsigned want;
+    int n = a->channel;
+    if (n < 1 || n > 4) error("Invalid gamepad channel");
+    if (!a->out || (want = a->out->size) < sizeof(unsigned)) {
+        a->result = -1;
+        return;
+    }
+    a->result = 0;
+    /* Only gamepad types, not keyboards, mice or other HID functions. */
+    unsigned type = (unsigned)nunstruct[n].type;
+    if (pm_gamepad_live_type(type)) {
+        a->result = 1;
+        value.type = type;
+        value.buttons = nunstruct[n].x0;
+        value.hat = (uint8_t)nunstruct[n].y0;
+        value.lx = nunstruct[n].ax;
+        value.ly = nunstruct[n].ay;
+        value.rx = nunstruct[n].Z;
+        value.ry = nunstruct[n].C;
+        value.l = nunstruct[n].L;
+        value.r = nunstruct[n].R;
+        for (int i = 0; i < 3; ++i) {
+            value.gyro[i] = nunstruct[n].gyro[i];
+            value.accel[i] = nunstruct[n].accs[i];
+        }
+#ifdef USBKEYBOARD
+        if (HID[n - 1].active && HID[n - 1].Device_type == type) {
+            value.vid = HID[n - 1].vid;
+            value.pid = HID[n - 1].pid;
+        }
+#endif
+    }
+    /* Match pm_get_info: preserve the caller's size field and copy only
+     * the portion understood by both sides of the ABI. */
+    size_t copy = want < sizeof(value) ? want : sizeof(value);
+    memcpy((unsigned char *)a->out + sizeof(unsigned),
+           (const unsigned char *)&value + sizeof(unsigned),
+           copy - sizeof(unsigned));
+}
+int pm_gamepad_get(int channel, pm_gamepad_state *out)
+{
+    struct {int channel, result; pm_gamepad_state *out;} a = {channel, -1, out};
+    pm_core_call(pm_gamepad_get_do, &a);
+    return a.result;
+}
+
+static void pm_gamepad_subscribe_do(void *arg)
+{
+    struct {int n; unsigned mask; pm_gamepad_callback cb;} *a = arg;
+    int n = a->n;
+    if (!pm_runtime_is_running()) error("Gamepad events require a running C program");
+    if (n < 1 || n > 4) error("Invalid gamepad channel");
+    if (!a->cb) {
+        if (pm_gamepad_c_owns(n)) {
+            pm_c_gamepad_cb[n] = NULL;
+            pm_c_gamepad_owned &= ~(1u << n);
+            pm_c_gamepad_masks[n] = 0;
+            nunfoundc[n] = false;
+        }
+        return;
+    }
+    if (a->mask > 0xFFFFu || !a->mask) error("Invalid gamepad button mask");
+#if !defined(USBKEYBOARD) && !defined(PICOMITEBTH) && !defined(PICOMITEHDMIBTH)
+    error("Gamepad events unavailable in this firmware");
+#elif !defined(USBKEYBOARD)
+    if (n != 3) error("BLE gamepad uses channel 3");
+#endif
+#ifdef USBKEYBOARD
+    if (HID[n - 1].active &&
+        !pm_gamepad_valid_type(HID[n - 1].Device_type))
+        error("HID channel is not a gamepad");
+#endif
+    if (!pm_gamepad_c_owns(n) && nunInterruptc[n])
+        error("Gamepad interrupt already configured by BASIC");
+    /* BASIC retains nunInterruptc[] and x1. The USB decoders OR this
+     * C mask into their existing edge detection; BLE uses the same latch. */
+    pm_c_gamepad_last[n] = nunstruct[n].x0;
+    pm_c_gamepad_masks[n] = a->mask;
+    pm_c_gamepad_cb[n] = a->cb;
+    pm_c_gamepad_owned |= 1u << n;
+    nunfoundc[n] = false;
+}
+void pm_gamepad_on_change(int channel, unsigned mask, pm_gamepad_callback cb)
+{
+    struct {int n; unsigned mask; pm_gamepad_callback cb;} a = {channel,mask,cb};
+    pm_core_call(pm_gamepad_subscribe_do, &a);
+}
+void pm_gamepad_poll(void) { pm_core_call(NULL,NULL); }
+
 /* Compiler-independent native functions; local declarations avoid clashing
  * with the legacy static TinyCC adapter implementations during migration. */
 extern void pm_print(const char *);
@@ -149,6 +321,9 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_pin_read)
     PM_CORE_SYM(pm_gpio_on_edge)
     PM_CORE_SYM(pm_gpio_poll)
+    PM_CORE_SYM(pm_gamepad_get)
+    PM_CORE_SYM(pm_gamepad_on_change)
+    PM_CORE_SYM(pm_gamepad_poll)
     PM_CORE_SYM(pm_print)
     PM_CORE_SYM(pm_yield)
     PM_CORE_SYM(pm_delay_us)

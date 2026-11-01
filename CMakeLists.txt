@@ -521,8 +521,10 @@ if(IS_RP2350)
             -DOUT=${TCC_ROM_C}
             -DHDR=${CMAKE_CURRENT_LIST_DIR}/core/tcc/tcc_picomite.h
             -DEXTRA=${CMAKE_CURRENT_LIST_DIR}/PicoCFunctions.h
+            -DPYTHON=${Python3_EXECUTABLE}
             -P ${CMAKE_CURRENT_LIST_DIR}/cmake/tcc_rom_headers.cmake
         DEPENDS ${TCC_ROM_HEADERS} ${CMAKE_CURRENT_LIST_DIR}/cmake/tcc_rom_headers.cmake
+                ${CMAKE_CURRENT_LIST_DIR}/cmake/tcc_strip_header_comments.py
         COMMENT "Embedding the TinyCC system headers"
         VERBATIM)
     target_sources(PicoMite PRIVATE core/tcc/tcc_picomite.c ${TCC_ROM_C})
