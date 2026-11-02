@@ -25,7 +25,7 @@ void ResidentDMA(long long *command)
             pm_resident_stop(); return;
         }
         state = pm_resident_state();
-        if (!state) { pm_print("DMA NO STATE\r\n"); pm_resident_stop(); return; }
+        if (!state) { pm_print("DMA NO STATE\r\n"); pm_resident_pio_release(); pm_resident_stop(); return; }
         state[8] = 0x12345678u;
         state[9] = 0xabcdef01u;
         state[10] = 0x02040608u;
@@ -38,6 +38,8 @@ void ResidentDMA(long long *command)
             status = pm_resident_pio_dma_start(1, 0, 8, 4, 1);
         if (status) {
             pm_print("DMA INIT FAILED\r\n");
+            pm_resident_pio_dma_stop(1);
+            pm_resident_pio_release();
             pm_resident_stop(); return;
         }
         pm_print("DMA RESIDENT INSTALLED\r\n");
@@ -66,6 +68,8 @@ void ResidentDMA(long long *command)
         else
             pm_print("DMA BUSY OBSERVED\r\n");
     } else if (*command == 2) {
+        pm_resident_pio_dma_stop(1);
+        pm_resident_pio_release();
         pm_resident_stop();
         pm_print("DMA RESIDENT STOPPED\r\n");
     }

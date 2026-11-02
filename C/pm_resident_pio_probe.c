@@ -32,6 +32,7 @@ void ResidentPIO(long long *cmd)
         if (state[0]) pm_print("PIO RESIDENT TICKED\r\n");
         else pm_print("PIO RESIDENT ZERO\r\n");
     } else if (*cmd == 2) {
+        pm_resident_pio_release();
         pm_resident_stop();
         pm_print("PIO RELEASED\r\n");
     } else if (*cmd == 3) {

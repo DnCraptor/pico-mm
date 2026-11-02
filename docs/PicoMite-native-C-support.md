@@ -658,7 +658,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 27.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 29.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -693,8 +693,10 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 25 | `resident.h`: one resident-owned GPIO input with latched rising/falling-edge callbacks, exclusive pin reservation, automatic release across library replacement |
 | 26 | `resident.h`: exclusive PIO block reservation, pin ownership, instruction loading, state-machine init/start/stop; no resident DMA yet |
 | 27 | `resident.h`: bounded resident PIO RX/TX DMA using persistent state, channel reservation across RUN/END and abort-before-release |
+| 28 | `resident.h`: additional heap-managed persistent DMA buffer, disjoint RX/TX ranges and stop-before-free semantics |
+| 29 | `resident.h`: explicit DMA claim/start/halt/release, arbitrary resident-owned buffers, manual resource teardown and LIBRARY write guard |
 
-### Resident CSUB service (API v24-v27)
+### Resident CSUB service (API v24-v29)
 
 `#include <picomite/resident.h>` provides a **single cooperative service**
 installed by a CSUB in the flash `LIBRARY` (`pm_resident_start(callback, period_ms)`).
@@ -705,9 +707,10 @@ resident descriptor, including 64 bytes of state, from the system (newlib)
 heap, independent of BASIC's resettable heap. `pm_resident_state()` returns
 NULL before installation and after stop; installation zeroes the state.
 The descriptor survives `END`, `ClearRuntime()` and the next BASIC `RUN`,
-but not a firmware reset. `pm_resident_stop()` frees the descriptor;
-overwriting or deleting the flash
-library unregisters it **before** flash is erased. `pm_resident_active()`
+but not a firmware reset. The resident explicitly releases GPIO, DMA,
+PIO and allocated buffers before `pm_resident_stop()` frees the descriptor.
+Changing flash LIBRARY while a resident is installed is refused; the kernel
+never automatically tears down resident-owned resources. `pm_resident_active()`
 reports whether the service is installed. Registration refuses RUN-loaded
 C/ELF code, RAM-LIBRARY code, reentrant installation and periods outside
 10..60000 ms. The callback must be short and must not call MMBasic, allocate
@@ -746,10 +749,10 @@ All four SMs and instruction memory are protected against BASIC and RUN C
 operations on the claimed block. `PIO ASSEMBLE`, `PIO CONFIGURE`, and
 `PIO SYNC` are also guarded (SYNC is refused while any resident PIO is
 claimed because it can change neighbouring blocks).
-`pm_resident_pio_release()`, resident stop/restart, and flash LIBRARY
-replacement disable all claimed SMs, clear PIO instructions, then release
-the reserved pins. This release is intentionally destructive to the claimed
-block only. The resident descriptor is still the only persistent allocation.
+`pm_resident_pio_release()` explicitly disables SMs, clears instructions
+and releases reserved pins on the claimed block, but refuses release until
+DMA claims have been explicitly halted/released. Stop/restart/LIBRARY write
+never implicitly release GPIO/PIO/DMA resources.
 PIO DMA is introduced in v27: its global channel ownership and
 `ClearExternalIO()` lifetime must be protected independently of PIO.
 
@@ -779,12 +782,57 @@ until explicit stop or resident teardown, even if finite DMA has completed.
 resetting all other DMA as before. The resident stops DMA **before** disabling
 its PIO SMs and releasing flash-LIBRARY-backed callbacks. PIO program, init,
 start and stop are refused while resident DMA is owned to prevent stranding
-transfers. No resident DMA interrupts/callbacks or arbitrary buffers yet.
+transfers. No resident DMA interrupts/callbacks.
+
+API v28 adds `pm_resident_dma_buffer_alloc(words)` and
+`pm_resident_dma_buffer()` to allocate one zero-initialised, 32-bit aligned
+system-heap buffer which persists independently of BASIC memory. The size is
+chosen in 32-bit words and constrained by actual free heap memory, not a
+fixed 64-byte slot. `pm_resident_pio_dma_start_buffer(tx,sm,offset,count,cyclic)`
+uses a subrange of that buffer with the same PIO/DMA hardware path as v27.
+RX/TX overlapping regions are rejected only in this *legacy* v28 helper;
+the direct v29 API has no such policy. `pm_resident_dma_buffer_free()`
+retains its old guard, but the buffer must now be freed explicitly before
+stopping the resident. Allocation and free require foreground CSUB context.
+
+Build `C/pm_resident_buffer_probe.c` as ARMv6-M soft-float ET_REL and
+copy the three matching `Bas/pm_resident_buffer_*.bas` files. Run
+`pm_resident_buffer_install.bas`, then `pm_resident_buffer_check.bas` to
+exercise cyclic TX from a 256-byte buffer across BASIC `RUN` boundaries.
+No external wires are needed. This smoke test detects channel loss but does
+not measure end-to-end throughput.
 
 The no-wires hardware smoke test `C/pm_resident_dma_probe.c` loads a
 PIO PULL/JMP loop and starts cyclic TX from words 8..11 of the resident
 state. `pm_resident_dma_install.bas`/`pm_resident_dma_check.bas` verify that
 the TX channel remains busy after a second RUN and is released on stop.
+
+### Explicit resident ownership (API v29)
+
+The native C resident is trusted code. The firmware tracks ownership solely
+so BASIC END/RUN, ClearExternalIO, and the normal C runtime cannot reclaim
+claimed hardware. `pm_resident_alloc(size_t)` and `pm_resident_free(ptr)`
+expose persistent system-heap memory without a one-buffer restriction. No
+size policy or DMA-alias check is imposed: the resident must keep buffers
+valid until it explicitly halts DMA.
+
+For each channel use `pm_resident_dma_claim(tx)` first, then call
+`pm_resident_pio_dma_transfer(tx,sm,ptr,capacity_bytes,count,bits,cyclic,ring)`.
+It supports 8/16/32-bit words, one-shot or cyclic RX/TX and optional cyclic
+TX ring; the hardware helper retains its transfer-size and alignment
+requirements. `pm_resident_dma_halt(tx)` stops the data/reload pair but keeps
+ownership. `pm_resident_dma_release(tx)` returns it to BASIC and refuses
+release without an explicit halt. An already claimed PIO block must be used;
+GPIO/SM setup belongs to the resident. The v27/v28 DMA helpers remain for
+source compatibility, but the direct pointer API is preferable.
+
+Stop order is the resident's responsibility: halt DMA, release DMA claims,
+release PIO/GPIO claims, free persistent buffers, then `pm_resident_stop()`.
+`pm_resident_stop()` returns -1 rather than freeing live resources; reinstall
+also refuses to overwrite ownership. Flash LIBRARY modifications require
+explicit resident stop even if no hardware is claimed. A callback longjmp
+sets `pm_resident_faulted()` and suspends future callbacks without reclaiming
+resources; foreground CSUB code must recover and explicitly shut down.
 
 ### GUI/touch API (v23)
 
@@ -831,7 +879,7 @@ are dropped. On C RUN end or `pm_gui_on_event(NULL)` the subscription and
 queue are discarded, without resetting BASIC's GUI controls or interrupt
 vectors. Registration requires an active `.c`/`.elf` RUN with GUICONTROLS;
 it is not available to external CSUBs. GUI creation and CTRLVAL mutation
-are likewise not exported to CSUBs. `PM_API_VERSION` is 27.
+are likewise not exported to CSUBs. `PM_API_VERSION` is 29.
 
 Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
 fill `state.size = sizeof state` first; returns 1 for a supported controller,

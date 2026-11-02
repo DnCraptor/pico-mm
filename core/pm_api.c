@@ -16,8 +16,8 @@ extern char *DMAinterruptRX, *DMAinterruptTX;
 /* Resident code is fixed in flash LIBRARY. Its data must survive InitHeap(),
  * which clears the BASIC heap on RUN/END. The descriptor is allocated from
  * the separate newlib heap only when a resident is installed; no resident
- * state is reserved in SRAM by the linker. DMA uses only these persistent
- * state words, never memory allocated by the BASIC heap. */
+ * state is reserved in SRAM by the linker. Resident DMA may reference only
+ * these state words or a separate, managed newlib allocation. */
 typedef void (*pm_resident_callback)(void *);
 typedef void (*pm_resident_gpio_callback)(int, unsigned, void *);
 typedef struct {
@@ -32,9 +32,15 @@ typedef struct {
     uint64_t pio_pins; /* Physical GPIOs, kept through ClearExternalIO(). */
     unsigned char pio_owner; /* PIO block + 1, zero is unclaimed. */
     unsigned char dma_owned; /* bit 0: RX; bit 1: TX */
+    unsigned char dma_halted; /* claimed channel explicitly stopped */
+    unsigned char dma_buffer_mask; /* legacy managed-buffer API */
     unsigned dma_region[2]; /* bitset of words used in the 64-byte state */
+    unsigned dma_buffer_offset[2], dma_buffer_count[2];
+    uint32_t *dma_buffer; /* separately allocated, persistent system heap */
+    unsigned dma_buffer_words;
     bool pio_access; /* Temporary privilege while using shared PIO helpers. */
     bool busy;
+    bool faulted; /* disable callbacks on abnormal longjmp, retain ownership */
 } pm_resident_descriptor;
 /* M2P2HDMI has no slack in the main RAM linker region. The single pointer
  * resides in the otherwise unused 4 KB SCRATCH_X bank on RP2350. */
@@ -178,29 +184,14 @@ void pm_resident_gpio_off(void)
     if (pm_resident) pm_resident_gpio_release(pm_resident);
 }
 
-/* Firmware-owned DMA uses the descriptor's 64 state bytes. Both BASIC and
- * C RUN share the two PIO DMA channel pairs, so ownership must be checked
- * by their hardware entry points and honored by ClearExternalIO(). */
-static void pm_resident_dma_release_hw(pm_resident_descriptor *r)
-{
-    for (int tx = 0; tx != 2; ++tx) {
-        unsigned bit = 1u << tx;
-        if (!(r->dma_owned & bit)) continue;
-        r->pio_access = true;
-        pm_pio_dma_stop_hw(tx); /* abort data AND restart channel */
-        r->dma_owned &= ~bit; /* only now may BASIC reuse the channel */
-        r->dma_region[tx] = 0;
-    }
-    r->pio_access = false;
-}
-
-/* PIO is block-exclusive, but RX/TX DMA channels are global to PicoMite. */
-static void pm_resident_pio_release_hw(pm_resident_descriptor *r)
+/* The resident, not the kernel, must halt and release DMA before PIO.
+ * Keeping the claim while idle is necessary: BASIC must not reuse it. */
+static int pm_resident_pio_release_hw(pm_resident_descriptor *r)
 {
     unsigned pio, gp;
     uint64_t pins;
-    if (!r->pio_owner) return;
-    pm_resident_dma_release_hw(r); /* DMA must stop before the PIO/CSUB. */
+    if (!r->pio_owner) return 0;
+    if (r->dma_owned) return -1;
     pio = r->pio_owner - 1u;
     r->pio_access = true;
     pm_pio_clear_hw((int)pio); /* Disable all SMs before releasing GPIOs. */
@@ -212,6 +203,7 @@ static void pm_resident_pio_release_hw(pm_resident_descriptor *r)
         if (!(pins & (1ull << gp))) continue;
         ExtCfg(codemap((int)gp), EXT_NOT_CONFIG, 0);
     }
+    return 0;
 }
 
 int pm_resident_pio_claim(int pio)
@@ -231,10 +223,10 @@ int pm_resident_pio_claim(int pio)
     r->pio_owner = (unsigned char)(pio + 1);
     return 0;
 }
-void pm_resident_pio_release(void)
+int pm_resident_pio_release(void)
 {
-    if (pm_resident && !pm_runtime_is_running())
-        pm_resident_pio_release_hw(pm_resident);
+    if (!pm_resident || pm_runtime_is_running()) return -1;
+    return pm_resident_pio_release_hw(pm_resident);
 }
 int pm_resident_pio_pin(int gp)
 {
@@ -260,7 +252,7 @@ int pm_resident_pio_pin(int gp)
 int pm_resident_pio_program(const uint16_t *words, unsigned count)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r || !r->fn || !r->pio_owner || r->dma_owned ||
+    if (!r || !r->fn || !r->pio_owner ||
         pm_runtime_is_running() || !words || count == 0 || count > 32)
         return -1;
     r->pio_access = true;
@@ -274,7 +266,7 @@ int pm_resident_pio_init_machine(int sm, uint32_t pinctrl,
                                  int sideout, int setout, int outout)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r || !r->fn || !r->pio_owner || r->dma_owned ||
+    if (!r || !r->fn || !r->pio_owner ||
         pm_runtime_is_running() || sm < 0 || sm >= 4 ||
         start < 0 || start > 31) return -1;
     r->pio_access = true;
@@ -286,7 +278,7 @@ int pm_resident_pio_init_machine(int sm, uint32_t pinctrl,
 int pm_resident_pio_start(int sm)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r || !r->fn || !r->pio_owner || r->dma_owned ||
+    if (!r || !r->fn || !r->pio_owner ||
         pm_runtime_is_running() || sm < 0 || sm >= 4) return -1;
     r->pio_access = true;
     pm_pio_start_hw(r->pio_owner - 1, sm);
@@ -296,7 +288,7 @@ int pm_resident_pio_start(int sm)
 int pm_resident_pio_stop(int sm)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r || !r->fn || !r->pio_owner || r->dma_owned ||
+    if (!r || !r->fn || !r->pio_owner ||
         pm_runtime_is_running() || sm < 0 || sm >= 4) return -1;
     r->pio_access = true;
     pm_pio_stop_hw(r->pio_owner - 1, sm);
@@ -304,45 +296,202 @@ int pm_resident_pio_stop(int sm)
     return 0;
 }
 
-/* DMA payload is a bounded subrange of pm_resident_state()[0..15].
- * RX and TX may run concurrently only on disjoint state word ranges.
- * Cyclic RX requires a power-of-two block; cyclic TX uses address reload. */
-int pm_resident_pio_dma_stop(int tx);
-int pm_resident_pio_dma_start(int tx, int sm, unsigned offset_words,
-                              unsigned count, int cyclic)
+/* These are ordinary persistent system-heap allocations, not BASIC heap.
+ * Multiple allocations are permitted. The caller owns their lifetimes and
+ * must stop any DMA using an allocation BEFORE freeing it. No auto cleanup. */
+void *pm_resident_alloc(size_t bytes)
+{
+    if (!pm_resident || !pm_resident->fn || pm_runtime_is_running() || !bytes)
+        return NULL;
+    return malloc(bytes);
+}
+void pm_resident_free(void *ptr)
+{
+    if (!pm_runtime_is_running()) free(ptr);
+}
+/* Explicit claim of PicoMite's shared RX or TX DMA channel. A claim does NOT
+ * start hardware; halt() stops hardware but retains the claim, release()
+ * returns the channel to BASIC without stopping it implicitly. */
+int pm_resident_dma_claim(int tx)
 {
     pm_resident_descriptor *r = pm_resident;
-    unsigned bit, region, other;
+    unsigned bit;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        (tx != 0 && tx != 1)) return -1;
+    bit = 1u << tx;
+    if (r->dma_owned & bit) return 0;
+    if (pm_pio_dma_busy_hw(tx) || (tx ? DMAinterruptTX : DMAinterruptRX))
+        return -1;
+    r->dma_owned |= bit;
+    r->dma_halted |= bit;
+    return 0;
+}
+int pm_resident_dma_halt(int tx)
+{
+    pm_resident_descriptor *r = pm_resident;
+    unsigned bit;
+    if (!r || pm_runtime_is_running() || !pm_resident_dma_owned(tx))
+        return -1;
+    bit = 1u << tx;
+    r->pio_access = true;
+    pm_pio_dma_stop_hw(tx);
+    r->pio_access = false;
+    r->dma_halted |= bit;
+    return 0;
+}
+int pm_resident_dma_release(int tx)
+{
+    pm_resident_descriptor *r = pm_resident;
+    unsigned bit;
+    if (!r || pm_runtime_is_running() || !pm_resident_dma_owned(tx))
+        return -1;
+    bit = 1u << tx;
+    if (!(r->dma_halted & bit)) return -1; /* must halt explicitly */
+    r->dma_owned &= ~bit;
+    r->dma_halted &= ~bit;
+    r->dma_region[tx] = 0;
+    r->dma_buffer_mask &= ~bit;
+    r->dma_buffer_offset[tx] = r->dma_buffer_count[tx] = 0;
+    return 0;
+}
+int pm_resident_pio_dma_transfer(int tx, int sm, void *buffer,
+                                 size_t capacity_bytes, uint32_t count,
+                                 unsigned bits, int cyclic, int tx_ring)
+{
+    pm_resident_descriptor *r = pm_resident;
+    unsigned bit;
+    int pior;
+    if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
+        (tx != 0 && tx != 1) || sm < 0 || sm > 3 || !buffer ||
+        (cyclic != 0 && cyclic != 1) || (tx_ring != 0 && tx_ring != 1) ||
+        (!tx && tx_ring) || !pm_resident_dma_owned(tx)) return -1;
+    bit = 1u << tx;
+    pior = r->pio_owner - 1;
+    r->dma_halted &= ~bit; /* longjmp leaves channel claimed for manual recovery */
+    r->pio_access = true;
+    if (cyclic)
+        pm_pio_dma_cyclic_hw(tx, pior, sm, buffer, capacity_bytes,
+                             count, bits, tx_ring, 1);
+    else
+        pm_pio_dma_transfer_hw(tx, pior, sm, buffer, capacity_bytes,
+                               count, bits, 1);
+    r->pio_access = false;
+    return 0;
+}
+
+/* Compatibility v28 single-buffer helpers; the direct API above does not
+ * impose their buffer count or overlap policy. */
+/* The additional buffer is the ONLY resident DMA allocation. It uses
+ * newlib's heap, not PicoMite's resettable BASIC heap, and is never resized
+ * while a DMA channel can reference it. The caller selects its word count. */
+int pm_resident_dma_buffer_alloc(unsigned words)
+{
+    pm_resident_descriptor *r = pm_resident;
+    uint32_t *buffer;
+    if (!r || !r->fn || r->busy || pm_runtime_is_running() ||
+        r->dma_buffer || !words || words > (size_t)-1 / sizeof(uint32_t))
+        return -1;
+    buffer = malloc((size_t)words * sizeof(uint32_t));
+    if (!buffer) return -1;
+    memset(buffer, 0, (size_t)words * sizeof(uint32_t));
+    r->dma_buffer = buffer;
+    r->dma_buffer_words = words;
+    return 0;
+}
+uint32_t *pm_resident_dma_buffer(void)
+{
+    return pm_resident && pm_resident->fn && !pm_runtime_is_running()
+           ? pm_resident->dma_buffer : NULL;
+}
+unsigned pm_resident_dma_buffer_words(void)
+{
+    return pm_resident && pm_resident->fn && !pm_runtime_is_running()
+           ? pm_resident->dma_buffer_words : 0;
+}
+int pm_resident_dma_buffer_free(void)
+{
+    pm_resident_descriptor *r = pm_resident;
+    if (!r || !r->fn || r->busy || pm_runtime_is_running() ||
+        !r->dma_buffer || r->dma_buffer_mask) return -1;
+    free(r->dma_buffer);
+    r->dma_buffer = NULL;
+    r->dma_buffer_words = 0;
+    return 0;
+}
+/* The legacy v28 buffer is also freed only by an explicit call. */
+
+/* Legacy v27 state-backed and v28 allocated-buffer transfers share the same
+ * channel ownership and hardware path; different buffers never alias.
+ * Cyclic RX requires a power-of-two count, as in the BASIC implementation. */
+int pm_resident_pio_dma_stop(int tx);
+static int pm_resident_pio_dma_start_common(int tx, int sm,
+                                           unsigned offset_words,
+                                           unsigned count, int cyclic,
+                                           bool external)
+{
+    pm_resident_descriptor *r = pm_resident;
+    uint32_t *base;
+    unsigned capacity, bit, other, region = 0;
     int pior;
     if (!r || !r->fn || !r->pio_owner || pm_runtime_is_running() ||
         (tx != 0 && tx != 1) || sm < 0 || sm >= 4 ||
-        offset_words >= 16 || !count || count > 16 - offset_words ||
-        (cyclic != 0 && cyclic != 1) ||
+        (cyclic != 0 && cyclic != 1) || !count ||
         (cyclic && !tx && (count & (count - 1u)))) return -1;
+    base = external ? r->dma_buffer : r->words;
+    capacity = external ? r->dma_buffer_words : 16u;
+    if (!base || offset_words >= capacity ||
+        count > capacity - offset_words) return -1;
     bit = 1u << tx;
     other = 1u << (tx ^ 1);
-    region = ((1u << count) - 1u) << offset_words;
-    if ((r->dma_owned & other) && (r->dma_region[tx ^ 1] & region))
-        return -1;
+    if (external) {
+        if ((r->dma_owned & r->dma_buffer_mask & other) &&
+            offset_words < r->dma_buffer_offset[tx ^ 1] +
+                           r->dma_buffer_count[tx ^ 1] &&
+            r->dma_buffer_offset[tx ^ 1] < offset_words + count)
+            return -1;
+    } else {
+        region = ((1u << count) - 1u) << offset_words;
+        if ((r->dma_owned & other) && !(r->dma_buffer_mask & other) &&
+            (r->dma_region[tx ^ 1] & region)) return -1;
+    }
     if (!(r->dma_owned & bit)) {
         if (pm_pio_dma_busy_hw(tx) ||
             (tx ? DMAinterruptTX : DMAinterruptRX)) return -1;
     } else {
-        pm_resident_pio_dma_stop(tx);
+        if (pm_resident_pio_dma_stop(tx) != 0) return -1;
     }
     pior = r->pio_owner - 1;
-    /* Claim BEFORE arming: an error unwind must see an owned channel. */
+    /* Claim BEFORE arming: error unwind must see an owned channel. */
     r->dma_owned |= bit;
+    r->dma_halted &= ~bit;
     r->dma_region[tx] = region;
+    r->dma_buffer_offset[tx] = external ? offset_words : 0;
+    r->dma_buffer_count[tx] = external ? count : 0;
+    if (external) r->dma_buffer_mask |= bit;
+    else r->dma_buffer_mask &= ~bit;
     r->pio_access = true;
     if (cyclic)
-        pm_pio_dma_cyclic_hw(tx, pior, sm, r->words + offset_words,
-                             count * sizeof(uint32_t), count, 32, 0, 1);
+        pm_pio_dma_cyclic_hw(tx, pior, sm, base + offset_words,
+                             (size_t)count * sizeof(uint32_t),
+                             count, 32, 0, 1);
     else
-        pm_pio_dma_transfer_hw(tx, pior, sm, r->words + offset_words,
-                               count * sizeof(uint32_t), count, 32, 1);
+        pm_pio_dma_transfer_hw(tx, pior, sm, base + offset_words,
+                               (size_t)count * sizeof(uint32_t),
+                               count, 32, 1);
     r->pio_access = false;
     return 0;
+}
+int pm_resident_pio_dma_start(int tx, int sm, unsigned offset_words,
+                              unsigned count, int cyclic)
+{
+    return pm_resident_pio_dma_start_common(tx, sm, offset_words, count,
+                                            cyclic, false);
+}
+int pm_resident_pio_dma_start_buffer(int tx, int sm, unsigned offset_words,
+                                     unsigned count, int cyclic)
+{
+    return pm_resident_pio_dma_start_common(tx, sm, offset_words, count,
+                                            cyclic, true);
 }
 int pm_resident_pio_dma_busy(int tx)
 {
@@ -358,7 +507,10 @@ int pm_resident_pio_dma_stop(int tx)
     r->pio_access = true;
     pm_pio_dma_stop_hw(tx);
     r->dma_owned &= ~bit;
+    r->dma_halted &= ~bit;
     r->dma_region[tx] = 0;
+    r->dma_buffer_mask &= ~bit;
+    r->dma_buffer_offset[tx] = r->dma_buffer_count[tx] = 0;
     r->pio_access = false;
     return 0;
 }
@@ -375,8 +527,9 @@ int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
         if (!r) return -1;
         pm_resident = r;
     } else {
-        pm_resident_pio_release_hw(r);
-        pm_resident_gpio_release(r); /* Restart must not leak old pins. */
+        /* Restart is not permission to steal/free live resident resources. */
+        if (r->gpio_pin || r->pio_owner || r->dma_owned || r->dma_buffer)
+            return -1;
     }
     memset(r, 0, sizeof(*r));
     r->period_us = interval_ms * 1000u;
@@ -384,18 +537,21 @@ int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
     r->fn = fn;
     return 0;
 }
-void pm_resident_stop(void)
+int pm_resident_stop(void)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r) return;
+    if (!r) return 0;
+    if (r->pio_owner || r->gpio_pin || r->dma_owned || r->dma_buffer)
+        return -1;
     r->fn = NULL;
-    /* The callback may unregister itself. Its state remains valid until
-     * it returns, then pm_resident_service() releases the descriptor. */
-    if (r->busy) return;
-    pm_resident_pio_release_hw(r);
-    pm_resident_gpio_release(r);
+    if (r->busy) return 0; /* defer descriptor free until callback returns */
     pm_resident = NULL;
     free(r);
+    return 0;
+}
+int pm_resident_faulted(void)
+{
+    return pm_resident && pm_resident->faulted;
 }
 int pm_resident_active(void)
 {
@@ -410,7 +566,8 @@ uint32_t *pm_resident_state(void)
 void pm_resident_service(void)
 {
     pm_resident_descriptor *r = pm_resident;
-    if (!r || !r->fn || r->busy || pm_runtime_is_running() || MMAbort)
+    if (!r || !r->fn || r->busy || r->faulted ||
+        pm_runtime_is_running() || MMAbort)
         return;
     if (r->gpio_pin && r->gpio_fn) {
         const int gp = r->gpio_gp;
@@ -442,25 +599,22 @@ void pm_resident_service(void)
     r->busy = false;
     if (!r->fn) pm_resident_stop();
 }
-/* A callback error can longjmp over pm_resident_service's last statement. */
+/* An abnormal callback unwind must never free hardware or resident code.
+ * Suspend callbacks; the resident's foreground CSUB performs recovery. */
 void pm_resident_unwind(void)
 {
     pm_resident_descriptor *r = pm_resident;
-    /* Hardware helper errors can longjmp over their privilege clear.
-     * A half-armed DMA must not retain a pointer into an invalid context. */
-    if (r && r->pio_access && r->dma_owned)
-        pm_resident_dma_release_hw(r);
-    if (r) r->pio_access = false;
-    if (r && r->busy) {
+    if (!r) return;
+    r->pio_access = false;
+    if (r->busy) {
         r->busy = false;
-        pm_resident_stop();
+        r->faulted = true;
     }
 }
 void pm_resident_before_library_write(void)
 {
-    if (pm_resident && pm_resident->busy)
-        error("Cannot overwrite LIBRARY in resident callback");
-    pm_resident_stop(); /* free BEFORE flash erase invalidates the code */
+    if (pm_resident)
+        error("Stop resident C explicitly before modifying LIBRARY");
 }
 
 /* RP2350 keeps the existing PM_CALL error/abort boundary in the C runtime.
@@ -786,6 +940,18 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_resident_pio_dma_start)
     PM_CORE_SYM(pm_resident_pio_dma_busy)
     PM_CORE_SYM(pm_resident_pio_dma_stop)
+    PM_CORE_SYM(pm_resident_dma_buffer_alloc)
+    PM_CORE_SYM(pm_resident_dma_buffer)
+    PM_CORE_SYM(pm_resident_dma_buffer_words)
+    PM_CORE_SYM(pm_resident_dma_buffer_free)
+    PM_CORE_SYM(pm_resident_pio_dma_start_buffer)
+    PM_CORE_SYM(pm_resident_alloc)
+    PM_CORE_SYM(pm_resident_free)
+    PM_CORE_SYM(pm_resident_dma_claim)
+    PM_CORE_SYM(pm_resident_dma_halt)
+    PM_CORE_SYM(pm_resident_dma_release)
+    PM_CORE_SYM(pm_resident_pio_dma_transfer)
+    PM_CORE_SYM(pm_resident_faulted)
     PM_CORE_SYM(pm_cls)
     PM_CORE_SYM(pm_pixel)
     {"pm_line", (const void *)&pm_core_line},

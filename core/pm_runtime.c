@@ -16,7 +16,7 @@
 #include <setjmp.h>
 #include "pico/time.h"
 
-#define PM_RUNTIME_VERSION 27u
+#define PM_RUNTIME_VERSION 29u
 
 typedef union pm_runtime_block {
     struct {

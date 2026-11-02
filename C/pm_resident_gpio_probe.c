@@ -42,6 +42,7 @@ void ResidentGpioProbe(long long *command, long long *gp)
                  (unsigned long)s[2]);
         pm_print(b);
     } else if (*command == 2) {
+        pm_resident_gpio_off();
         pm_resident_stop();
         pm_print("RESIDENT GPIO: STOPPED\r\n");
     } else if (*command == 3) {
