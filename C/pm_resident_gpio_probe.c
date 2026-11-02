@@ -1,4 +1,4 @@
-/* API v25: build as ARMv6-M/soft-float ET_REL for a flash LIBRARY CSUB.
+/* API v31: build as ARMv6-M/soft-float ET_REL for a flash LIBRARY CSUB.
  * Test with a freely configurable GPIO input (e.g. GP26 only when unused).
  * Connect the input briefly to GND and release with PULLUP configured. */
 #include <stdint.h>
@@ -27,10 +27,16 @@ void ResidentGpioProbe(long long *command, long long *gp)
             pm_print("RESIDENT GPIO: INSTALL REFUSED\r\n");
             return;
         }
-        if (pm_resident_gpio_on_edge((int)*gp, PM_RESIDENT_GPIO_BOTH,
-                                     PM_RESIDENT_GPIO_PULLUP, gpio_callback)) {
+        if (pm_resident_gpio_claim((int)*gp)) {
             if (!had_resident) pm_resident_stop();
             pm_print("RESIDENT GPIO: PIN REFUSED\r\n");
+            return;
+        }
+        if (pm_resident_gpio_on_edge((int)*gp, PM_RESIDENT_GPIO_BOTH,
+                                     PM_RESIDENT_GPIO_PULLUP, gpio_callback)) {
+            pm_resident_gpio_release((int)*gp);
+            if (!had_resident) pm_resident_stop();
+            pm_print("RESIDENT GPIO: EDGE REFUSED\r\n");
             return;
         }
         pm_print("RESIDENT GPIO: INSTALLED\r\n");
@@ -43,10 +49,13 @@ void ResidentGpioProbe(long long *command, long long *gp)
         pm_print(b);
     } else if (*command == 2) {
         pm_resident_gpio_off();
-        pm_resident_stop();
-        pm_print("RESIDENT GPIO: STOPPED\r\n");
+        if (pm_resident_gpio_release((int)*gp) == 0 &&
+            pm_resident_stop() == 0)
+            pm_print("RESIDENT GPIO: STOPPED\r\n");
+        else
+            pm_print("RESIDENT GPIO: RELEASE FAILED\r\n");
     } else if (*command == 3) {
         pm_resident_gpio_off();
-        pm_print("RESIDENT GPIO: DETACHED\r\n");
+        pm_print("RESIDENT GPIO: DETACHED (GPIO STILL CLAIMED)\r\n");
     }
 }

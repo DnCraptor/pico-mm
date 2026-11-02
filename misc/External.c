@@ -2289,10 +2289,10 @@ int CheckPin(int pin, int action)
         return false;
     }
 
-    /* Resident GPIO cannot be seized by BASIC/other C users. The reset
-     * loop in ClearExternalIO() uses CP_NOABORT, leaving this pin intact
-     * across END and RUN; ordinary configuration attempts report an error. */
-    if (pm_resident_gpio_pin_owned(pin))
+    /* A resident claim survives END/RUN. Only the scoped native
+     * configuration call may modify it; reset (CP_NOABORT) never may. */
+    if (pm_resident_gpio_pin_owned(pin) &&
+        ((action & CP_NOABORT) || !pm_resident_gpio_access_allowed(pin)))
     {
         if (!(action & CP_NOABORT))
             error("Pin %/| belongs to resident C", pin, pin);

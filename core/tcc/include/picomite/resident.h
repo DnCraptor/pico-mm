@@ -1,4 +1,4 @@
-/* Cooperative flash-LIBRARY C CSUB resident service (API v29). */
+/* Cooperative flash-LIBRARY C CSUB resident service (API v31). */
 #ifndef _PICOMITE_RESIDENT_H
 #define _PICOMITE_RESIDENT_H
 #include <stdint.h>
@@ -14,14 +14,15 @@ int pm_resident_start(void (*callback)(void *state), unsigned interval_ms);
 int pm_resident_stop(void);
 int pm_resident_active(void);
 int pm_resident_faulted(void); /* abnormal callback suspended until restart */
-/* Exactly one exclusive GPIO subscription per installed resident. Valid
- * edges: PM_RESIDENT_GPIO_RISE/FALL/BOTH; pull: NONE/UP/DOWN.
+/* One optional GPIO edge subscription per installed resident, attached
+ * ONLY to an already claimed GPIO. Valid edges: RISE/FALL/BOTH; pull: NONE/
+ * UP/DOWN. Off removes the subscription but does not release the GPIO claim.
  * The callback is also required to live in flash LIBRARY CSUB code.
  * It runs from routinechecks() on the foreground core, NOT in GPIO IRQ.
  * 'events' is a mask of latched edges, not a reliable edge count: multiple
  * changes can coalesce, especially during RUN .c/.elf or long BASIC work.
- * The GPIO reservation survives END/RUN and is released on stop/restart or
- * flash LIBRARY deletion. A failed installation returns -1. */
+ * The claim survives END/RUN and is released only by the resident itself.
+ * A failed subscription returns -1 without acquiring a pin. */
 #define PM_RESIDENT_GPIO_RISE 1u
 #define PM_RESIDENT_GPIO_FALL 2u
 #define PM_RESIDENT_GPIO_BOTH 3u
@@ -31,6 +32,14 @@ int pm_resident_faulted(void); /* abnormal callback suspended until restart */
 int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
     void (*callback)(int gp, unsigned events, void *state));
 void pm_resident_gpio_off(void);
+/* API v31: reserve any number of available GPIOs, independent of their
+ * operation. The resident configures a claimed pin with pm_pin_mode() (and
+ * uses pm_pin_write/read()), optionally subscribes to edges, then explicitly
+ * detaches and releases it. Claim changes no hardware state; release never
+ * resets hardware. Release refuses a pin with an active edge subscription.
+ * Claims survive END/RUN and prevent stop/restart until released. */
+int pm_resident_gpio_claim(int gp);
+int pm_resident_gpio_release(int gp);
 /* A PIO claim owns one *whole block* (all four SMs and instruction memory),
  * never just an SM. Claims and hardware teardown are explicit.
  * Existing hardware must be idle. Claim alone does not change PIO memory.

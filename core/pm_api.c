@@ -30,6 +30,7 @@ typedef struct {
     int gpio_gp;   /* Physical GPIO number passed to the C callback. */
     unsigned gpio_edges; /* PM_GPIO_RISE / PM_GPIO_FALL mask. */
     uint64_t pio_pins; /* Physical GPIOs, kept through ClearExternalIO(). */
+    uint64_t gpio_claims; /* GPIOs claimed by the resident, no hardware reset. */
     unsigned char pio_owner; /* PIO block + 1, zero is unclaimed. */
     unsigned char dma_owned; /* bit 0: RX; bit 1: TX */
     unsigned char dma_halted; /* claimed channel explicitly stopped */
@@ -39,6 +40,7 @@ typedef struct {
     uint32_t *dma_buffer; /* separately allocated, persistent system heap */
     unsigned dma_buffer_words;
     bool pio_access; /* Temporary privilege while using shared PIO helpers. */
+    bool gpio_access; /* Scoped permission to configure a claimed GPIO. */
     bool busy;
     bool faulted; /* disable callbacks on abnormal longjmp, retain ownership */
 } pm_resident_descriptor;
@@ -91,7 +93,7 @@ static uint32_t pm_resident_gpio_raw_mask(int gp)
 
 /* Called before the descriptor is reused/freed. Clearing ownership first
  * allows ExtCfg() to perform the normal PicoMite pin cleanup. */
-static void pm_resident_gpio_release(pm_resident_descriptor *r)
+static void pm_resident_gpio_edge_detach(pm_resident_descriptor *r)
 {
     int pin = r->gpio_pin;
     if (!pin) return;
@@ -99,15 +101,60 @@ static void pm_resident_gpio_release(pm_resident_descriptor *r)
     r->gpio_pin = 0;
     r->gpio_edges = 0;
     io_bank0_hw->intr[r->gpio_gp >> 3] = pm_resident_gpio_raw_mask(r->gpio_gp);
+    r->gpio_access = true;
     ExtCfg(pin, EXT_NOT_CONFIG, 0);
+    r->gpio_access = false;
 }
 
 int pm_resident_gpio_pin_owned(int pin)
 {
     pm_resident_descriptor *r = pm_resident;
     if (!r || !r->fn) return 0;
-    return r->gpio_pin == pin ||
-           (r->pio_pins & (1ull << PinDef[pin].GPno)) != 0;
+    return ((r->pio_pins | r->gpio_claims) &
+            (1ull << PinDef[pin].GPno)) != 0;
+}
+/* Only the explicit native GPIO configuration path may pass CheckPin().
+ * CP_NOABORT (used by ClearExternalIO) must always respect ownership. */
+int pm_resident_gpio_access_allowed(int pin)
+{
+    pm_resident_descriptor *r = pm_resident;
+    unsigned gp = PinDef[pin].GPno;
+    return r && r->gpio_access && gp < 64u &&
+           (r->gpio_claims & (1ull << gp)) != 0;
+}
+
+/* A claim protects a physical GPIO from BASIC END/RUN and SETPIN, but
+ * does not configure the pad, install an IRQ or reset hardware on release.
+ * The resident owns both the setup and teardown. */
+int pm_resident_gpio_claim(int gp)
+{
+    pm_resident_descriptor *r = pm_resident;
+    int pin;
+    uint64_t bit;
+    if (!r || !r->fn || pm_runtime_is_running() ||
+        gp < 0 || gp >= NUM_BANK0_GPIOS) return -1;
+#ifdef rp2350
+    if (rp2350a && gp > 29) return -1;
+#endif
+    bit = 1ull << (unsigned)gp;
+    if (r->gpio_claims & bit) return 0;
+    pin = codemap(gp);
+    if (IsInvalidPin(pin) || ExtCurrentConfig[pin] != EXT_NOT_CONFIG ||
+        !CheckPin(pin, CP_NOABORT)) return -1;
+    r->gpio_claims |= bit;
+    return 0;
+}
+int pm_resident_gpio_release(int gp)
+{
+    pm_resident_descriptor *r = pm_resident;
+    uint64_t bit;
+    if (!r || pm_runtime_is_running() ||
+        gp < 0 || gp >= NUM_BANK0_GPIOS) return -1;
+    bit = 1ull << (unsigned)gp;
+    if (!(r->gpio_claims & bit)) return -1;
+    if (r->gpio_pin && r->gpio_gp == gp) return -1;
+    r->gpio_claims &= ~bit; /* The resident must restore the pad itself. */
+    return 0;
 }
 
 /* These checks also protect the BASIC PIO commands because they use the
@@ -152,13 +199,11 @@ int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
     if (rp2350a && gp > 29) return -1;
 #endif
     pin = codemap(gp);
-    if (IsInvalidPin(pin) || !(PinDef[pin].mode & DIGITAL_IN)) return -1;
-    if (pin != r->gpio_pin &&
-        (ExtCurrentConfig[pin] != EXT_NOT_CONFIG ||
-         !CheckPin(pin, CP_NOABORT))) return -1;
-    /* Permit reconfiguration of the same owned pin, but only one resident
-     * subscription at a time. Other pins are never modified on failure. */
-    if (r->gpio_pin) pm_resident_gpio_release(r);
+    if (IsInvalidPin(pin) || !(PinDef[pin].mode & DIGITAL_IN) ||
+        !(r->gpio_claims & (1ull << (unsigned)gp))) return -1;
+    /* A subscription never claims a GPIO: claim() must precede on_edge().
+     * Switching the one callback leaves all GPIO claims in place. */
+    if (r->gpio_pin) pm_resident_gpio_edge_detach(r);
     cfg = edges == PM_GPIO_RISE ? EXT_INT_HI :
           edges == PM_GPIO_FALL ? EXT_INT_LO : EXT_INT_BOTH;
     option = pull == PM_GPIO_PULLUP ? CNPUSET :
@@ -170,7 +215,9 @@ int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
         PinSetBit(pin, TRISSET);
     }
 #endif
+    r->gpio_access = true;
     ExtCfg(pin, cfg, option);
+    r->gpio_access = false;
     io_bank0_hw->intr[gp >> 3] = pm_resident_gpio_raw_mask(gp);
     r->gpio_gp = gp;
     r->gpio_edges = edges;
@@ -181,7 +228,7 @@ int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
 
 void pm_resident_gpio_off(void)
 {
-    if (pm_resident) pm_resident_gpio_release(pm_resident);
+    if (pm_resident) pm_resident_gpio_edge_detach(pm_resident);
 }
 
 /* The resident, not the kernel, must halt and release DMA before PIO.
@@ -528,8 +575,8 @@ int pm_resident_start(pm_resident_callback fn, unsigned interval_ms)
         pm_resident = r;
     } else {
         /* Restart is not permission to steal/free live resident resources. */
-        if (r->gpio_pin || r->pio_owner || r->dma_owned || r->dma_buffer)
-            return -1;
+        if (r->gpio_pin || r->gpio_claims || r->pio_owner ||
+            r->dma_owned || r->dma_buffer) return -1;
     }
     memset(r, 0, sizeof(*r));
     r->period_us = interval_ms * 1000u;
@@ -541,8 +588,8 @@ int pm_resident_stop(void)
 {
     pm_resident_descriptor *r = pm_resident;
     if (!r) return 0;
-    if (r->pio_owner || r->gpio_pin || r->dma_owned || r->dma_buffer)
-        return -1;
+    if (r->pio_owner || r->gpio_pin || r->gpio_claims ||
+        r->dma_owned || r->dma_buffer) return -1;
     r->fn = NULL;
     if (r->busy) return 0; /* defer descriptor free until callback returns */
     pm_resident = NULL;
@@ -606,6 +653,7 @@ void pm_resident_unwind(void)
     pm_resident_descriptor *r = pm_resident;
     if (!r) return;
     r->pio_access = false;
+    r->gpio_access = false;
     if (r->busy) {
         r->busy = false;
         r->faulted = true;
@@ -676,7 +724,18 @@ int pm_inkey(void)
 { int value = -1; pm_core_call(pm_inkey_do, &value); return value; }
 
 static void pm_pin_mode_do(void *p)
-{ int *a = p; ExtCfg(codemap(a[0]), a[1], 0); }
+{
+    int *a = p;
+    pm_resident_descriptor *r = pm_resident;
+    bool allow = r && r->fn && !pm_runtime_is_running() &&
+                 a[0] >= 0 && a[0] < NUM_BANK0_GPIOS &&
+                 (r->gpio_claims & (1ull << (unsigned)a[0])) != 0;
+    /* BASIC SETPIN never goes through this native API. The foreground
+     * CSUB may configure a claimed pin; the BASIC reset must not. */
+    if (allow) r->gpio_access = true;
+    ExtCfg(codemap(a[0]), a[1], 0);
+    if (allow) r->gpio_access = false;
+}
 void pm_pin_mode(int gp, int mode)
 { int a[] = {gp, mode}; pm_core_call(pm_pin_mode_do, a); }
 
@@ -930,6 +989,8 @@ static const pm_core_symbol pm_core_symbols[] = {
     PM_CORE_SYM(pm_resident_state)
     PM_CORE_SYM(pm_resident_gpio_on_edge)
     PM_CORE_SYM(pm_resident_gpio_off)
+    PM_CORE_SYM(pm_resident_gpio_claim)
+    PM_CORE_SYM(pm_resident_gpio_release)
     PM_CORE_SYM(pm_resident_pio_claim)
     PM_CORE_SYM(pm_resident_pio_release)
     PM_CORE_SYM(pm_resident_pio_pin)

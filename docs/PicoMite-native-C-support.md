@@ -658,7 +658,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 29.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 31.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -695,8 +695,10 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 27 | `resident.h`: bounded resident PIO RX/TX DMA using persistent state, channel reservation across RUN/END and abort-before-release |
 | 28 | `resident.h`: additional heap-managed persistent DMA buffer, disjoint RX/TX ranges and stop-before-free semantics |
 | 29 | `resident.h`: explicit DMA claim/start/halt/release, arbitrary resident-owned buffers, manual resource teardown and LIBRARY write guard |
+| 30 | `resident.h`: multiple explicitly claimed physical GPIOs, independent of PIO blocks and GPIO-edge callbacks; no implicit hardware configuration or cleanup |
+| 31 | `resident.h`: one GPIO ownership path for ordinary native I/O and optional edge subscriptions; claim is mandatory, detach/release explicit |
 
-### Resident CSUB service (API v24-v29)
+### Resident CSUB service (API v24-v31)
 
 `#include <picomite/resident.h>` provides a **single cooperative service**
 installed by a CSUB in the flash `LIBRARY` (`pm_resident_start(callback, period_ms)`).
@@ -730,10 +732,19 @@ is **not** a lossless high-speed edge counter or direct IRQ callback.
 
 The pin is reserved against BASIC `SETPIN`, other C allocations, and
 `ClearExternalIO()` cleanup, so the input and its pull survive `END`/`RUN`.
-`pm_resident_gpio_off()` detaches the GPIO independently of the periodic
-service. Resident stop, replacement, abnormal callback exit, and flash
-LIBRARY erase all release the pin using ordinary PicoMite `ExtCfg()` cleanup.
-No new static SRAM buffer or hardware IRQ vector is allocated.
+`pm_resident_gpio_off()` explicitly detaches that subscription and restores
+its PicoMite pin configuration. No static SRAM buffer or IRQ vector is added.
+
+API v31 unifies ownership: every pin must first be registered by
+`pm_resident_gpio_claim(gp)`. This passive claim survives BASIC END/RUN and
+blocks BASIC SETPIN and reset cleanup. The resident can then configure the
+pin using the existing native `pm_pin_mode(gp, PM_DIN/PM_DOUT)` and use
+`pm_pin_read/write`; only that native foreground configuration path is
+allowed to reconfigure a claimed GPIO. It may instead register the optional
+`pm_resident_gpio_on_edge(gp,...)` service. `pm_resident_gpio_off()` detaches
+but does not release the claim. `pm_resident_gpio_release(gp)` fails while
+an edge subscription is still active, and never resets the pad. Explicit
+resource teardown and hardware state restoration belong to the resident.
 
 API v26 adds `pm_resident_pio_claim(pio)` for one *exclusive PIO block*.
 It accepts only an available and idle block (SDK instruction allocator,
@@ -829,10 +840,11 @@ source compatibility, but the direct pointer API is preferable.
 Stop order is the resident's responsibility: halt DMA, release DMA claims,
 release PIO/GPIO claims, free persistent buffers, then `pm_resident_stop()`.
 `pm_resident_stop()` returns -1 rather than freeing live resources; reinstall
-also refuses to overwrite ownership. Flash LIBRARY modifications require
-explicit resident stop even if no hardware is claimed. A callback longjmp
-sets `pm_resident_faulted()` and suspends future callbacks without reclaiming
-resources; foreground CSUB code must recover and explicitly shut down.
+also refuses to overwrite ownership. This includes the GPIO claims from v30.
+Flash LIBRARY modifications require explicit resident stop even if no hardware
+is claimed. A callback longjmp sets `pm_resident_faulted()` and suspends future
+callbacks without reclaiming resources; foreground CSUB code must recover and
+explicitly shut down.
 
 ### GUI/touch API (v23)
 

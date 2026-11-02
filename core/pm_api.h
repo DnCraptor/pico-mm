@@ -28,6 +28,7 @@ void pm_resident_unwind(void);
 void pm_resident_before_library_write(void);
 /* Exclusive GPIO reservation, checked by CheckPin() and ClearExternalIO(). */
 int pm_resident_gpio_pin_owned(int pin);
+int pm_resident_gpio_access_allowed(int pin);
 /* Resident block-level PIO ownership; no persistent DMA in this stage. */
 int pm_resident_pio_block_owned(int pio);
 int pm_resident_pio_access_allowed(int pio);
