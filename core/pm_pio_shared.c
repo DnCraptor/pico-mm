@@ -562,6 +562,8 @@ void pm_pio_dma_stop_hw(int tx)
 {
     unsigned ch,c2;
     if (tx != 0 && tx != 1) error("Invalid PIO DMA direction");
+    if (pm_resident_dma_owned(tx) && !pm_resident_dma_access_allowed(tx))
+        error("PIO DMA channel owned by resident C");
     ch=tx ? dma_tx_chan : dma_rx_chan;
     c2=tx ? dma_tx_chan2 : dma_rx_chan2;
     dma_hw->abort=(1u<<ch)|(1u<<c2);

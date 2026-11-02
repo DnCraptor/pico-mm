@@ -32,6 +32,9 @@ int pm_resident_gpio_pin_owned(int pin);
 int pm_resident_pio_block_owned(int pio);
 int pm_resident_pio_access_allowed(int pio);
 int pm_resident_pio_any_owned(void);
+/* Global PIO DMA channel reservation, checked by BASIC and C RUN. */
+int pm_resident_dma_owned(int tx);
+int pm_resident_dma_access_allowed(int tx);
 
 /* Invoke a firmware service within the active C program's error boundary.
  * Passing NULL performs the abort/poll check only. */

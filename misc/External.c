@@ -6263,18 +6263,25 @@ void MIPS16 ClearExternalIO(void)
     DMAinterruptRX = NULL;
     DMAinterruptTX = NULL;
     WAVInterrupt = NULL;
-    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-    if (dma_channel_is_busy(dma_rx_chan))
-        dma_channel_abort(dma_rx_chan);
-    if (dma_channel_is_busy(dma_rx_chan2))
-        dma_channel_abort(dma_rx_chan2);
+    /* Resident DMA targets newlib-backed resident state. BASIC heap reset
+     * must not abort its data/reload channels; nonresident DMA remains RUN
+     * scoped and is stopped as before. */
+    if (!pm_resident_dma_owned(0)) {
+        dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
+        if (dma_channel_is_busy(dma_rx_chan))
+            dma_channel_abort(dma_rx_chan);
+        if (dma_channel_is_busy(dma_rx_chan2))
+            dma_channel_abort(dma_rx_chan2);
+    }
     //    dma_channel_cleanup(dma_rx_chan);
     //    dma_channel_cleanup(dma_rx_chan2);
-    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-    if (dma_channel_is_busy(dma_tx_chan))
-        dma_channel_abort(dma_tx_chan);
-    if (dma_channel_is_busy(dma_tx_chan2))
-        dma_channel_abort(dma_tx_chan2);
+    if (!pm_resident_dma_owned(1)) {
+        dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
+        if (dma_channel_is_busy(dma_tx_chan))
+            dma_channel_abort(dma_tx_chan);
+        if (dma_channel_is_busy(dma_tx_chan2))
+            dma_channel_abort(dma_tx_chan2);
+    }
     //    dma_channel_cleanup(dma_tx_chan);
     //    dma_channel_cleanup(dma_tx_chan2);
     dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));

@@ -890,6 +890,7 @@ void MIPS16 cmd_pio(void)
         if (tp)
         {
                 getcsargs(&tp, 13);
+                if (pm_resident_dma_owned(0)) error("PIO DMA RX owned by resident C");
                 if (pm_pio_dma_is_c_hw(0)) error("PIO DMA RX owned by C program");
                 if (checkstring(argv[0], (unsigned char *)"OFF"))
                 {
@@ -978,6 +979,7 @@ void MIPS16 cmd_pio(void)
         if (tp)
         {
                 getcsargs(&tp, 13);
+                if (pm_resident_dma_owned(1)) error("PIO DMA TX owned by resident C");
                 if (pm_pio_dma_is_c_hw(1)) error("PIO DMA TX owned by C program");
                 if (checkstring(argv[0], (unsigned char *)"OFF"))
                 {

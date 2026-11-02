@@ -35,6 +35,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "core/pm_api.h"
 #include "hardware/flash.h"
 #include "hardware/dma.h"
 #include "hardware/structs/watchdog.h"
@@ -3962,16 +3963,22 @@ void do_end(bool ecmd)
 		stepper_abort_to_safe_state_on_error();
 #endif
 
-	dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-	if (dma_channel_is_busy(dma_rx_chan))
-		dma_channel_abort(dma_rx_chan);
-	if (dma_channel_is_busy(dma_rx_chan2))
-		dma_channel_abort(dma_rx_chan2);
-	dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-	if (dma_channel_is_busy(dma_tx_chan))
-		dma_channel_abort(dma_tx_chan);
-	if (dma_channel_is_busy(dma_tx_chan2))
-		dma_channel_abort(dma_tx_chan2);
+	/* END must preserve resident-owned PIO DMA, as ClearExternalIO does.
+	 * Stop ordinary BASIC/RUN DMA, but leave the resident data/reload pair. */
+	if (!pm_resident_dma_owned(0)) {
+		dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
+		if (dma_channel_is_busy(dma_rx_chan))
+			dma_channel_abort(dma_rx_chan);
+		if (dma_channel_is_busy(dma_rx_chan2))
+			dma_channel_abort(dma_rx_chan2);
+	}
+	if (!pm_resident_dma_owned(1)) {
+		dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
+		if (dma_channel_is_busy(dma_tx_chan))
+			dma_channel_abort(dma_tx_chan);
+		if (dma_channel_is_busy(dma_tx_chan2))
+			dma_channel_abort(dma_tx_chan2);
+	}
 	dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
 	if (dma_channel_is_busy(ADC_dma_chan))
 		dma_channel_abort(ADC_dma_chan);

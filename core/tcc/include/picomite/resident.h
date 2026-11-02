@@ -1,4 +1,4 @@
-/* Cooperative flash-LIBRARY C CSUB resident service (API v26). */
+/* Cooperative flash-LIBRARY C CSUB resident service (API v27). */
 #ifndef _PICOMITE_RESIDENT_H
 #define _PICOMITE_RESIDENT_H
 #include <stdint.h>
@@ -28,7 +28,7 @@ int pm_resident_gpio_on_edge(int gp, unsigned edges, int pull,
     void (*callback)(int gp, unsigned events, void *state));
 void pm_resident_gpio_off(void);
 /* A PIO claim owns one *whole block* (all four SMs and instruction memory),
- * never just an SM. No resident DMA: both channels are reset by BASIC RUN.
+ * never just an SM. Resident DMA is managed by API v27.
  * Existing hardware must be idle. Claim alone does not change PIO memory.
  * Explicit PROGRAM replaces instruction memory; stop/restart/erase clears
  * the claimed PIO and releases all PIO GPIOs. No RUN-owned buffers survive.
@@ -43,6 +43,17 @@ int pm_resident_pio_init_machine(int sm, uint32_t pinctrl,
                                  int sideout, int setout, int outout);
 int pm_resident_pio_start(int sm);
 int pm_resident_pio_stop(int sm);
+/* Managed DMA on a claimed resident PIO block; TX=1, RX=0.
+ * Data lives ONLY in the 64-byte resident state (16 aligned words).
+ * offset_words/count select a contiguous subrange. Concurrent RX/TX must
+ * not overlap; do not modify a DMA-owned region until stopped. 32-bit data
+ * transfers only. cyclic=1 is address-reload RX/TX (RX count power of two).
+ * 0 on success, -1 for invalid/unavailable resources. No IRQ callbacks.
+ * Channel ownership survives END/RUN and releases before PIO/CSUB teardown. */
+int pm_resident_pio_dma_start(int tx, int sm, unsigned offset_words,
+                               unsigned count, int cyclic);
+int pm_resident_pio_dma_busy(int tx); /* -1 when not owned */
+int pm_resident_pio_dma_stop(int tx);
 /* 64 bytes allocated from the system heap on installation, not BASIC's
  * resettable heap. Survives RUN/END, zeroed on start, freed on stop/unload.
  * Returns NULL when no resident is installed. */

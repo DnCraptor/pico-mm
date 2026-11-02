@@ -658,7 +658,7 @@ firmware's services are being opened up further in separate headers under
 `picomite/`, one for each subsystem. They may repeat a few declarations of
 `picomite.h`, so a program can include either or both.
 
-The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 26.
+The API has a version, `PM_API_VERSION` (`<picomite/system.h>`), now 27.
 Each version adds functions without removing earlier ones. Check
 `pm_api_version()` before using a newer API; an ELF linked against a firmware
 that lacks a function reports `undefined symbol`. The common runtime exports
@@ -692,8 +692,9 @@ that lacks a function reports `undefined symbol`. The common runtime exports
 | 24 | `resident.h`: one cooperative flash-LIBRARY CSUB service surviving BASIC `END`/`RUN`; fixed firmware-owned state and explicit stop; no resident IRQ/DMA ownership yet |
 | 25 | `resident.h`: one resident-owned GPIO input with latched rising/falling-edge callbacks, exclusive pin reservation, automatic release across library replacement |
 | 26 | `resident.h`: exclusive PIO block reservation, pin ownership, instruction loading, state-machine init/start/stop; no resident DMA yet |
+| 27 | `resident.h`: bounded resident PIO RX/TX DMA using persistent state, channel reservation across RUN/END and abort-before-release |
 
-### Resident CSUB service (API v24-v26)
+### Resident CSUB service (API v24-v27)
 
 `#include <picomite/resident.h>` provides a **single cooperative service**
 installed by a CSUB in the flash `LIBRARY` (`pm_resident_start(callback, period_ms)`).
@@ -710,8 +711,8 @@ library unregisters it **before** flash is erased. `pm_resident_active()`
 reports whether the service is installed. Registration refuses RUN-loaded
 C/ELF code, RAM-LIBRARY code, reentrant installation and periods outside
 10..60000 ms. The callback must be short and must not call MMBasic, allocate
-memory or use RUN-scoped resources. This is **not yet** a general resident
-ELF process or an IRQ/DMA residency API.
+memory or use RUN-scoped resources. This is not a general resident ELF
+process or an API for installing native IRQ handlers.
 
 API v25 permits one **exclusive resident GPIO input**, configured by
 `pm_resident_gpio_on_edge(gp,edges,pull,callback)`. The callback receives
@@ -749,9 +750,8 @@ claimed because it can change neighbouring blocks).
 replacement disable all claimed SMs, clear PIO instructions, then release
 the reserved pins. This release is intentionally destructive to the claimed
 block only. The resident descriptor is still the only persistent allocation.
-PIO DMA is **not** supported in v26: `ClearExternalIO()` aborts the shared
-DMA channels on every BASIC reset, so DMA needs separate lifetime/ownership
-protection before it can safely remain active after END/RUN.
+PIO DMA is introduced in v27: its global channel ownership and
+`ClearExternalIO()` lifetime must be protected independently of PIO.
 
 Build `C/pm_resident_probe.c` as soft-float ARMv6-M ET_REL to
 `B:/pm_resident_probe.elf`, then copy `Bas/pm_resident_probe.bas`,
@@ -759,6 +759,32 @@ Build `C/pm_resident_probe.c` as soft-float ARMv6-M ET_REL to
 `RUN "pm_resident_install.bas"` should install the service; a subsequent
 `RUN "pm_resident_check.bas"` reads the continuing counter and stops it.
 The numbers increase, but their exact values depend on foreground load.
+
+### Resident DMA (API v27)
+
+`pm_resident_pio_dma_start(tx,sm,offset_words,count,cyclic)` attaches the
+existing global PIO DMA RX (tx=0) or TX (tx=1) channel pair to a resident-
+owned PIO block. Its only buffer is a bounded range of the resident's
+64-byte `pm_resident_state()` (offset/count in 32-bit words; 16 words total).
+No BASIC heap, runtime allocations or CSUB writable sections are referenced.
+The caller owns the buffer's contents and must not reuse words which RX DMA
+is writing; simultaneous RX and TX are allowed only in disjoint ranges.
+`cyclic=1` uses the existing address-reload chain; RX count must be a power
+of two. `pm_resident_pio_dma_busy(tx)` returns -1 for an unowned channel;
+`pm_resident_pio_dma_stop(tx)` aborts data and reload channels synchronously.
+
+A claimed channel remains unavailable to BASIC PIO DMA or normal RUN .c/.elf
+until explicit stop or resident teardown, even if finite DMA has completed.
+`ClearExternalIO()` preserves resident-owned channels across END/RUN while
+resetting all other DMA as before. The resident stops DMA **before** disabling
+its PIO SMs and releasing flash-LIBRARY-backed callbacks. PIO program, init,
+start and stop are refused while resident DMA is owned to prevent stranding
+transfers. No resident DMA interrupts/callbacks or arbitrary buffers yet.
+
+The no-wires hardware smoke test `C/pm_resident_dma_probe.c` loads a
+PIO PULL/JMP loop and starts cyclic TX from words 8..11 of the resident
+state. `pm_resident_dma_install.bas`/`pm_resident_dma_check.bas` verify that
+the TX channel remains busy after a second RUN and is released on stop.
 
 ### GUI/touch API (v23)
 
@@ -805,7 +831,7 @@ are dropped. On C RUN end or `pm_gui_on_event(NULL)` the subscription and
 queue are discarded, without resetting BASIC's GUI controls or interrupt
 vectors. Registration requires an active `.c`/`.elf` RUN with GUICONTROLS;
 it is not available to external CSUBs. GUI creation and CTRLVAL mutation
-are likewise not exported to CSUBs. `PM_API_VERSION` is 26.
+are likewise not exported to CSUBs. `PM_API_VERSION` is 27.
 
 Gamepad API v22 uses `pm_gamepad_get(channel,&state)` (channels 1..4):
 fill `state.size = sizeof state` first; returns 1 for a supported controller,

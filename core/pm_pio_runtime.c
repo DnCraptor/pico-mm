@@ -265,6 +265,8 @@ static void pm_pio_dma_do(void *arg)
     pm_pio_dma_args *a=arg;
     unsigned mask=1u << a->tx;
     pm_pio_require_run();
+    if (pm_resident_dma_owned(a->tx))
+        error("PIO DMA channel owned by resident C");
     if (a->pio < 0 || a->pio >= 3 || a->sm < 0 || a->sm >= 4)
         error("Invalid PIO state machine");
     if (!a->count || !a->capacity ||
